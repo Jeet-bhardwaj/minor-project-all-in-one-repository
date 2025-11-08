@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio ⇄ Image Converter (Alpha-safe PNG ↔ WAV)</title>
+  <style>
+    :root { --bg:#0b1020; --card:#111733; --muted:#9fb0ff; --text:#e8ecff; --fade:#9aa3c2; --accent:#6aa2ff; --accent2:#e464ff; }
+    *{box-sizing:border-box} html,body{height:100%} 
+    body{margin:0;background:
+      radial-gradient(1200px 600px at 50% -20%, rgba(106,162,255,0.25), transparent),
+      radial-gradient(700px 400px at 120% 110%, rgba(228,100,255,0.18), transparent),
+      var(--bg); color:var(--text); font:14px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+    .wrap{max-width:1100px;margin:0 auto;padding:32px 16px 60px;}
+    h1{font-size:28px;margin:0 0 6px;background:linear-gradient(90deg,var(--accent),#a58bff,var(--accent2));
+      -webkit-background-clip:text;background-clip:text;color:transparent}
+    .sub{color:var(--fade);margin:0 0 20px}
+    .grid{display:grid;gap:16px;grid-template-columns:1fr} 
+    @media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
+    .card{position:relative;background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:18px;
+      box-shadow:0 10px 40px rgba(0,0,0,.25);transition:transform .25s, box-shadow .25s}
+    .card:hover{transform:translateY(-2px); box-shadow:0 18px 70px rgba(80,120,255,.25)}
+    .label{font-weight:600;margin-bottom:6px}
+    .drop{border:1.5px dashed rgba(255,255,255,.25);border-radius:14px;padding:14px;background:rgba(0,0,0,.15)}
+    input[type=file]{width:100%;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.16);
+      background:#0c1430;color:#cfe0ff}
+    .row{margin-top:12px}
+    .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;background:#0e1738;color:#eaf0ff;
+      border:1px solid rgba(255,255,255,.16);border-radius:12px;text-decoration:none;cursor:pointer;
+      transition:transform .2s, box-shadow .2s, border-color .2s}
+    .btn:hover{transform:translateY(-1px); box-shadow:0 10px 40px rgba(106,162,255,.35); border-color:#6aa2ff}
+    .muted{color:#b9c6ff;font-size:12px;opacity:.85}
+    .audio{width:100%; margin-top:8px}
+    .busy{color:#cbd6ff}
+    .hint{font-size:12px; color:#9aa3c2; margin-top:8px}
+    .err{color:#ff9ca8; font-size:13px; margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Audio ⇄ Image Converter</h1>
+    <p class="sub">Convert a sound to a <b>lossless PNG</b> and back to a playable WAV — locally in your browser.</p>
+
+    <div class="grid">
+      <!-- Sound -> PNG -->
+      <div class="card">
+        <div class="label">Sound → Lossless PNG</div>
+        <div class="drop">
+          <div class="label">Upload a sound file (wav, mp3, m4a, etc.)</div>
+          <input id="audioInput" type="file" accept="audio/*" />
+          <div class="hint">We decode to PCM, write WAV, then embed that exact WAV into a PNG’s <b>alpha channel</b> (bit-perfect).</div>
+        </div>
+        <div id="audioBusy" class="row busy" style="display:none">Encoding…</div>
+        <div id="audioOK" class="row muted" style="display:none">Encoded successfully.</div>
+        <div id="audioErr" class="row err" style="display:none"></div>
+        <div id="audioOut" class="row" style="display:none">
+          <div class="muted">Preview WAV</div>
+          <audio id="audioPreview" controls class="audio"></audio>
+          <div class="row">
+            <a id="dlWav1" class="btn" download>⬇️ Download WAV</a>
+            <a id="dlPng" class="btn" download>🖼️ Download PNG</a>
+            <a id="openPng" class="btn" target="_blank" rel="noreferrer">🔍 Open PNG</a>
+          </div>
+          <div id="meta" class="row muted"></div>
+        </div>
+      </div>
+
+      <!-- PNG -> WAV -->
+      <div class="card">
+        <div class="label">Image (PNG) → WAV</div>
+        <div class="drop">
+          <div class="label">Upload a PNG made by this tool</div>
+          <input id="pngInput" type="file" accept="image/png" />
+          <div class="hint">We read WAV bytes from the PNG’s alpha channel exactly (no color drift).</div>
+        </div>
+        <div id="imgBusy" class="row busy" style="display:none">Decoding…</div>
+        <div id="imgErr" class="row err" style="display:none"></div>
+        <div id="imgOut" class="row" style="display:none">
+          <div class="muted">Preview WAV</div>
+          <audio id="imgPreview" controls class="audio"></audio>
+          <div class="row">
+            <a id="dlWav2" class="btn" download>⬇️ Download WAV</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="hint" style="margin-top:16px">
+      The PNG contains a tiny header + your WAV bytes in the <b>alpha</b> channel. Decoding is bit-perfect. Other PNGs won’t decode.
+    </p>
+  </div>
+
+  <script>
+    // -------- Core helpers --------
+    const MAGIC = [0x41,0x57,0x50,0x41]; // 'A','W','P','A'  (A = alpha-safe encoder)
+
+    function writeWavFromAudioBuffer(audioBuffer){
+      const numChannels = audioBuffer.numberOfChannels;
+      const sampleRate  = audioBuffer.sampleRate;
+      const numFrames   = audioBuffer.length;
+
+      const interleaved = new Int16Array(numFrames * numChannels);
+      const chans = [];
+      for(let ch=0; ch<numChannels; ch++) chans[ch] = audioBuffer.getChannelData(ch);
+      let i16 = 0;
+      for (let i=0; i<numFrames; i++){
+        for (let ch=0; ch<numChannels; ch++){
+          const s = Math.max(-1, Math.min(1, chans[ch][i]));
+          interleaved[i16++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+      }
+
+      const byteRate = sampleRate * numChannels * 2;
+      const blockAlign = numChannels * 2;
+      const pcmBytes = interleaved.length * 2;
+
+      const buf = new ArrayBuffer(44 + pcmBytes);
+      const view = new DataView(buf);
+      let o=0;
+      const wS  = s => { for (let i=0;i<s.length;i++) view.setUint8(o++, s.charCodeAt(i)); };
+      const w32 = n => { view.setUint32(o, n, true); o+=4; };
+      const w16 = n => { view.setUint16(o, n, true); o+=2; };
+
+      wS('RIFF'); w32(36 + pcmBytes); wS('WAVE'); wS('fmt '); w32(16); w16(1);
+      w16(numChannels); w32(sampleRate); w32(byteRate); w16(blockAlign); w16(16);
+      wS('data'); w32(pcmBytes);
+
+      new Int16Array(buf, 44).set(interleaved);
+      return new Uint8Array(buf);
+    }
+
+    // Encode bytes into PNG **alpha channel only** (RGB set to 0 to avoid color processing)
+    function pngFromBytesAlpha(bytes, width=1024){
+      const len = bytes.length;
+
+      // header = MAGIC (4) + LEN (4)
+      const header = new Uint8Array(8);
+      header.set(MAGIC,0);
+      header[4] = len & 0xff;
+      header[5] = (len >>> 8) & 0xff;
+      header[6] = (len >>> 16) & 0xff;
+      header[7] = (len >>> 24) & 0xff;
+
+      const payload = new Uint8Array(header.length + len);
+      payload.set(header, 0);
+      payload.set(bytes, header.length);
+
+      // 1 byte per pixel (alpha), so pixels = payload.length
+      const pixels = payload.length;
+      const h = Math.ceil(pixels / width);
+
+      // Build RGBA with all RGB=0, A=payload[i] (exact, no premultiply/cms issues)
+      const rgba = new Uint8ClampedArray(width * h * 4);
+      for (let i=0;i<pixels;i++){
+        const p = i * 4;
+        rgba[p+0] = 0;    // R
+        rgba[p+1] = 0;    // G
+        rgba[p+2] = 0;    // B
+        rgba[p+3] = payload[i]; // A
+      }
+      // Any extra trailing pixels already zero (A=0) — safe.
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const imgData = new ImageData(rgba, width, h);
+      ctx.putImageData(imgData, 0, 0);
+
+      return new Promise((resolve, reject)=>{
+        canvas.toBlob((blob)=>{
+          if(!blob) return reject(new Error('PNG encoding failed'));
+          resolve({ blob, width, height:h });
+        }, 'image/png');
+      });
+    }
+
+    async function bytesFromPngAlpha(file){
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      try{
+        await new Promise((res, rej)=>{ img.onload=res; img.onerror=rej; img.src=url; });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img,0,0);
+
+        const data = ctx.getImageData(0,0,img.width,img.height).data;
+
+        // Rebuild the alpha stream
+        const totalPixels = img.width * img.height;
+        const alphas = new Uint8Array(totalPixels);
+        for (let i=0;i<totalPixels;i++){
+          alphas[i] = data[i*4 + 3];
+        }
+
+        // Validate MAGIC (first 4 alpha bytes)
+        for (let i=0;i<4;i++){
+          if (alphas[i] !== MAGIC[i]) {
+            throw new Error(`Not an encoder PNG (magic mismatch @${i}). Found ${alphas[i]}, expected ${MAGIC[i]}.`);
+          }
+        }
+        const len = (alphas[4]) | (alphas[5]<<8) | (alphas[6]<<16) | (alphas[7]<<24);
+        const need = 8 + len;
+        if (need > alphas.length) throw new Error('Length header corrupt (payload longer than image).');
+
+        const out = new Uint8Array(len);
+        out.set(alphas.subarray(8, 8+len));
+        return out;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    // -------- DOM wires --------
+    const audioInput = document.getElementById('audioInput');
+    const audioBusy  = document.getElementById('audioBusy');
+    const audioOK    = document.getElementById('audioOK');
+    const audioErr   = document.getElementById('audioErr');
+    const audioOut   = document.getElementById('audioOut');
+    const audioPrev  = document.getElementById('audioPreview');
+    const dlWav1     = document.getElementById('dlWav1');
+    const dlPng      = document.getElementById('dlPng');
+    const openPng    = document.getElementById('openPng');
+    const meta       = document.getElementById('meta');
+
+    const pngInput   = document.getElementById('pngInput');
+    const imgBusy    = document.getElementById('imgBusy');
+    const imgErr     = document.getElementById('imgErr');
+    const imgOut     = document.getElementById('imgOut');
+    const imgPrev    = document.getElementById('imgPreview');
+    const dlWav2     = document.getElementById('dlWav2');
+
+    function fileNameTo(name, ext){ const i = name.lastIndexOf('.'); return (i>0 ? name.slice(0,i) : name)+ext; }
+    function setLinkFromBlob(a, blob, name){ if(a.href) URL.revokeObjectURL(a.href); a.href=URL.createObjectURL(blob); a.download=name; }
+
+    audioInput.addEventListener('change', async (e)=>{
+      const file = e.target.files && e.target.files[0];
+      if(!file) return;
+      audioBusy.style.display='block'; audioOK.style.display='none'; audioErr.style.display='none'; audioOut.style.display='none';
+      try{
+        const arrayBuf = await file.arrayBuffer();
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const ac = new AC();
+        const audioBuf = await ac.decodeAudioData(arrayBuf.slice(0));
+        const wavBytes = writeWavFromAudioBuffer(audioBuf);
+
+        const wavBlob = new Blob([wavBytes], {type:'audio/wav'});
+        const wavUrl  = URL.createObjectURL(wavBlob);
+        audioPrev.src = wavUrl;
+        setLinkFromBlob(dlWav1, wavBlob, fileNameTo(file.name, '.wav'));
+
+        const { blob: pngBlob, width, height } = await pngFromBytesAlpha(wavBytes);
+        setLinkFromBlob(dlPng, pngBlob, fileNameTo(file.name, '.png'));
+        openPng.href = URL.createObjectURL(pngBlob);
+        meta.textContent = `PNG size: ${width}×${height}px · WAV bytes: ${wavBytes.length.toLocaleString()}`;
+        audioOK.style.display='block';
+        audioOut.style.display='block';
+      }catch(err){
+        audioErr.textContent = (err && err.message) ? err.message : String(err);
+        audioErr.style.display='block';
+      }finally{
+        audioBusy.style.display='none';
+      }
+    });
+
+    pngInput.addEventListener('change', async (e)=>{
+      const file = e.target.files && e.target.files[0];
+      if(!file) return;
+      imgBusy.style.display='block'; imgErr.style.display='none'; imgOut.style.display='none';
+      try{
+        const bytes = await bytesFromPngAlpha(file);
+        const blob = new Blob([bytes], {type:'audio/wav'});
+        const url  = URL.createObjectURL(blob);
+        imgPrev.src = url;
+        setLinkFromBlob(dlWav2, blob, fileNameTo(file.name, '.wav'));
+        imgOut.style.display='block';
+      }catch(err){
+        imgErr.textContent = (err && err.message) ? err.message : String(err);
+        imgErr.style.display='block';
+      }finally{
+        imgBusy.style.display='none';
+      }
+    });
+  </script>
+</body>
+</html>
