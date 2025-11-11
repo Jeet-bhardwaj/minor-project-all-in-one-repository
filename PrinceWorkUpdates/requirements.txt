@@ -1,0 +1,4 @@
+pip install numpy librosa soundfile tifffile tqdm
+# and install ffmpeg system-wide for best speed (optional but recommended)
+# Windows: download ffmpeg and add to PATH
+# Linux/macOS: apt / brew install ffmpeg
