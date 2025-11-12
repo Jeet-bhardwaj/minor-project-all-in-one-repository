@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
 """
-extract_and_reconstruct_v2.py
+extract_and_reconstruct_v2.py (patched manifest parsing)
 
 Extract embedded FLAC bytes from TIFFs created by batch_audio_to_tiff_v2.py,
 verify against manifest.json, and optionally reconstruct contiguous WAVs.
 
-Pre-configured paths (change if needed):
- - INPUT_TIFF_DIR : where your TIFFs and manifest.json are (output_dir)
- - OUT_FLAC_DIR   : where extracted FLAC chunks will be written
- - OUT_WAV_DIR    : where reconstructed per-source WAVs will be written
-
-Usage:
-  python extract_and_reconstruct_v2.py           # runs with defaults
-  python extract_and_reconstruct_v2.py --reconstruct  # also reconstruct WAV per source
-  python extract_and_reconstruct_v2.py --workers 3
-
-Dependencies:
-  pip install numpy soundfile tifffile tqdm librosa
-  (ffmpeg optional for advanced concat; recommended but not required)
+This version contains a robust manifest scanner that will find chunk entries
+even if the manifest format varies slightly (different key names or structure).
 """
 import argparse
 import json
@@ -33,6 +22,7 @@ from tifffile import imread
 from tqdm import tqdm
 import os
 import subprocess
+import traceback
 
 # ---------------------------
 # Pre-configured paths (user)
@@ -61,123 +51,83 @@ def sha256_of_streaming_file(path: Path):
     return h.hexdigest()
 
 def extract_flac_from_tiff_stream(tiff_path: Path, out_flac_path: Path, memmap=True):
-    """
-    Extract page 1 of the TIFF (embedded raw uint8 bytes) to a .flac file.
-    Uses imread(..., memmap=True) when possible to avoid loading everything into RAM.
-    Writes out in streaming manner.
-    """
-    # Ensure parent exists
     out_flac_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Attempt memmap read of page 1 (key=1). tifffile.imread supports memmap=True.
     try:
-        arr = imread(str(tiff_path), key=1, memmap=memmap)  # returns a numpy array or memmap; shape (1, N)
-        # flatten view (no copy if memmap)
+        arr = imread(str(tiff_path), key=1, memmap=memmap)
         flat = np.ravel(arr)
-        # write in chunks from memmap to avoid extra memory copy
         with out_flac_path.open('wb') as out_f:
-            # If it's a memmap, slicing will be efficient; still iterate in blocks
             total = flat.size
             idx = 0
             block = CHUNK_READ_BLOCK
-            # flat is uint8 array; view its buffer
             while idx < total:
                 end = idx + min(block, total - idx)
                 chunk = flat[idx:end].tobytes()
                 out_f.write(chunk)
                 idx = end
     except Exception as e:
-        # fallback: read whole array then write (less memory-efficient, but should rarely hit)
+        # fallback: read whole array then write
         print(f"⚠️  memmap/read fallback for {tiff_path.name}: {e}")
         arr_full = imread(str(tiff_path), key=1)
         flat = np.ravel(arr_full)
         out_flac_path.write_bytes(flat.tobytes())
 
 def extract_single_entry(entry: dict, out_flac_dir: Path, tiff_base_dir: Path, resume=True):
-    """
-    entry: dict containing at least 'tiff' (path string) and 'flac_sha256' (expected)
-    returns tuple (status, info) where status in {'ok','skipped','mismatch','error'}
-    """
-    tiff_rel = entry.get('tiff') or entry.get('tiff_path') or entry.get('tiffPath')
+    tiff_rel = entry.get('tiff') or entry.get('tiff_path') or entry.get('tiffPath') or entry.get('tiffFile') or entry.get('tiff_file')
     if not tiff_rel:
         return ('error', f"No tiff path in manifest entry: {entry}")
     tiff_path = Path(tiff_rel)
-    # If tiff path is relative, join with base dir
     if not tiff_path.is_absolute():
         tiff_path = (tiff_base_dir / tiff_path).resolve()
 
     if not tiff_path.exists():
         return ('error', f"TIFF not found: {tiff_path}")
 
-    # output flac file path (named by tiff stem)
     out_flac_path = out_flac_dir / (tiff_path.stem + ".flac")
-    expected_sha = entry.get('flac_sha256') or entry.get('sha256') or entry.get('flac_sha')
+    expected_sha = entry.get('flac_sha256') or entry.get('sha256') or entry.get('flac_sha') or entry.get('sha')
 
-    # Resume check: if file exists and checksum matches, skip
     if out_flac_path.exists() and resume:
         try:
             cur_sha = sha256_of_streaming_file(out_flac_path)
             if expected_sha and cur_sha == expected_sha:
                 return ('skipped', f"{out_flac_path.name} (already present & checksum ok)")
-            # else continue to re-extract (overwrite)
         except Exception as e:
             print("⚠️  checksum failed during resume check:", e)
 
     try:
-        # Extract flac bytes from tiff (streamed)
         extract_flac_from_tiff_stream(tiff_path, out_flac_path, memmap=True)
-        # Verify sha
         cur_sha = sha256_of_streaming_file(out_flac_path)
         if expected_sha and cur_sha != expected_sha:
             return ('mismatch', f"Checksum mismatch for {out_flac_path.name}: expected {expected_sha}, got {cur_sha}")
         return ('ok', str(out_flac_path))
     except Exception as e:
-        return ('error', f"Extraction error for {tiff_path}: {e}")
+        tb = traceback.format_exc()
+        return ('error', f"Extraction error for {tiff_path}: {e}\n{tb}")
 
 def reconstruct_wav_for_source(source_entry: dict, out_flac_dir: Path, out_wav_dir: Path, use_ffmpeg_if_available=True):
-    """
-    Given a manifest 'source' entry with 'chunks' list that includes tiff_path & start_time_seconds,
-    reconstruct a single WAV by streaming each corresponding .flac in order and writing sequentially.
-    The implementation decodes each FLAC to PCM using soundfile in streaming manner and appends into one WAV.
-    """
     chunks = sorted(source_entry.get('chunks', []), key=lambda x: x.get('start_time_seconds', 0))
     if not chunks:
         return ('error', 'No chunks for this source')
-
-    # Prepare output wav path (use source filename stem)
     src_file = Path(source_entry.get('source_file', 'unknown_source'))
     out_wav_dir.mkdir(parents=True, exist_ok=True)
     out_wav_path = out_wav_dir / (src_file.stem + "_reconstructed.wav")
-
-    # If ffmpeg is available and user prefers it, we could use it to concat decoded wavs - but we'll do pure-python streaming
-    # We'll open soundfile writer with parameters matching first chunk's FLAC sample rate & channels
-    # Read metadata from first flac to set writer
     first_chunk = chunks[0]
-    first_flac = out_flac_dir / (Path(first_chunk.get('tiff')).stem + ".flac")
+    first_flac = out_flac_dir / (Path(first_chunk.get('tiff') or first_chunk.get('tiff_path') or first_chunk.get('tiffPath')).stem + ".flac")
     if not first_flac.exists():
         return ('error', f"Missing first FLAC at {first_flac}")
-
-    # Determine sample rate and channels
     with sf.SoundFile(str(first_flac)) as sf1:
         sr = sf1.samplerate
         channels = sf1.channels
-        subtype = 'PCM_16'  # output wav subtype; adjust if you want higher bit depth
-
-    # Open output file for writing (stream)
+        subtype = 'PCM_16'
     with sf.SoundFile(str(out_wav_path), mode='w', samplerate=sr, channels=channels, subtype=subtype) as out_sf:
-        # iterate chunks
         for c in chunks:
-            flac_name = Path(c.get('tiff')).stem + ".flac"
+            tiff_str = c.get('tiff') or c.get('tiff_path') or c.get('tiffPath') or c.get('tiffFile') or c.get('tiff_file')
+            flac_name = Path(tiff_str).stem + ".flac"
             flac_path = out_flac_dir / flac_name
             if not flac_path.exists():
                 return ('error', f"Missing FLAC chunk {flac_path}")
-            # stream read and write
             with sf.SoundFile(str(flac_path), mode='r') as inf:
-                # If sample rate differs, resample (rare). Do simple check.
                 if inf.samplerate != sr or inf.channels != channels:
-                    # Use librosa for resampling a chunk in blocks (less memory safe) — but such mismatch should be uncommon.
                     data = inf.read(dtype='float32')
-                    # convert channels if needed
                     if data.ndim > 1 and channels == 1:
                         data = data.mean(axis=1)
                     if inf.samplerate != sr:
@@ -187,6 +137,126 @@ def reconstruct_wav_for_source(source_entry: dict, out_flac_dir: Path, out_wav_d
                     for block in inf.blocks(blocksize=CHUNK_READ_BLOCK, dtype='float32'):
                         out_sf.write(block)
     return ('ok', str(out_wav_path))
+
+# -------------------
+# Robust manifest scanning
+# -------------------
+def find_chunk_like_objects(manifest: dict):
+    """
+    Return list of normalized chunk dicts:
+      {'tiff': <path str>, 'flac_sha256': <maybe>, 'source_file': <maybe>, 'start_time_seconds': <maybe>}
+    This function is tolerant to different manifest shapes.
+    """
+    found = []
+
+    # Helper to normalize a candidate dict or string
+    def normalize_candidate(candidate, source_file=None):
+        if candidate is None:
+            return None
+        if isinstance(candidate, str):
+            if candidate.lower().endswith(('.tif', '.tiff')):
+                return {'tiff': candidate, 'source_file': source_file}
+            else:
+                return None
+        if isinstance(candidate, dict):
+            # find any key that looks like a tiff path
+            tiff_val = None
+            for k, v in candidate.items():
+                if 'tiff' in k.lower() or (isinstance(v, str) and v.lower().endswith(('.tif', '.tiff'))):
+                    # prefer explicit keys containing 'tiff'
+                    tiff_val = v if isinstance(v, str) else None
+                    # if v is not a string maybe the key name itself is the path in some odd manifests -> skip
+                    if tiff_val:
+                        break
+            if not tiff_val:
+                # secondary search: any string value that ends with .tif/.tiff
+                for k, v in candidate.items():
+                    if isinstance(v, str) and v.lower().endswith(('.tif', '.tiff')):
+                        tiff_val = v
+                        break
+            # if no tiff found, try to find nested chunk-like dicts or list inside
+            if tiff_val:
+                normalized = {
+                    'tiff': tiff_val,
+                    'flac_sha256': candidate.get('flac_sha256') or candidate.get('sha256') or candidate.get('flac_sha') or candidate.get('sha'),
+                    'source_file': source_file,
+                    'start_time_seconds': candidate.get('start_time_seconds') or candidate.get('start') or candidate.get('start_time') or candidate.get('start_seconds')
+                }
+                return normalized
+            # else not a chunk-like dict
+            return None
+        return None
+
+    # 1) Common pattern: manifest['files'] -> list of file entries -> each file entry has 'chunks'
+    files = manifest.get('files')
+    if isinstance(files, list):
+        for f in files:
+            source_file = f.get('source_file') or f.get('source') or f.get('input_file')
+            chunks = f.get('chunks') or f.get('entries') or f.get('pieces')
+            if isinstance(chunks, list) and len(chunks) > 0:
+                for c in chunks:
+                    n = normalize_candidate(c, source_file=source_file)
+                    if n:
+                        found.append(n)
+                    else:
+                        # try if c itself is a string path
+                        if isinstance(c, str) and c.lower().endswith(('.tif', '.tiff')):
+                            found.append({'tiff': c, 'source_file': source_file})
+            else:
+                # maybe chunks are stored under odd keys in this file entry
+                # scan entire file entry values for chunk-like dicts
+                for v in f.values():
+                    if isinstance(v, (list, tuple)):
+                        for item in v:
+                            n = normalize_candidate(item, source_file=source_file)
+                            if n:
+                                found.append(n)
+                    else:
+                        n = normalize_candidate(v, source_file=source_file)
+                        if n:
+                            found.append(n)
+
+    # 2) Top-level 'chunks' (some manifests may have direct chunk lists)
+    top_chunks = manifest.get('chunks') or manifest.get('entries')
+    if isinstance(top_chunks, list):
+        for c in top_chunks:
+            n = normalize_candidate(c, source_file=None)
+            if n:
+                found.append(n)
+
+    # 3) Last resort: scan all dicts recursively for any string ending with .tif/.tiff
+    if not found:
+        def walk_and_collect(obj, source_file_hint=None):
+            if isinstance(obj, dict):
+                # if dict itself looks like a chunk, normalize
+                n = normalize_candidate(obj, source_file=source_file_hint)
+                if n:
+                    found.append(n)
+                    return
+                for k, v in obj.items():
+                    # pass down a source_file hint if we find one
+                    new_hint = source_file_hint
+                    if k.lower() in ('source_file', 'source', 'input_file', 'sourcefile'):
+                        if isinstance(v, str):
+                            new_hint = v
+                    walk_and_collect(v, source_file_hint=new_hint)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk_and_collect(item, source_file_hint)
+            elif isinstance(obj, str):
+                if obj.lower().endswith(('.tif', '.tiff')):
+                    found.append({'tiff': obj, 'source_file': source_file_hint})
+        walk_and_collect(manifest, source_file_hint=None)
+
+    # Deduplicate by (tiff, start_time_seconds)
+    seen = set()
+    normalized = []
+    for e in found:
+        key = (e.get('tiff'), e.get('start_time_seconds'))
+        if key not in seen:
+            seen.add(key)
+            normalized.append(e)
+    return normalized
 
 def main():
     parser = argparse.ArgumentParser(description="Extract FLAC from TIFFs and optionally reconstruct WAVs.")
@@ -210,29 +280,24 @@ def main():
         print("Fatal: cannot load manifest:", e)
         sys.exit(1)
 
-    # Build flattened list of chunk entries (each with tiff path & expected sha)
-    all_entries = []
-    for file_entry in manifest.get('files', []):
-        for chunk in file_entry.get('chunks', []):
-            # chunk may have 'tiff' or 'tiff_path' keys
-            tiff_key = chunk.get('tiff') or chunk.get('tiff_path') or chunk.get('tiffPath')
-            if not tiff_key:
-                continue
-            entry = {
-                'tiff': tiff_key,
-                'flac_sha256': chunk.get('flac_sha256') or chunk.get('sha256'),
-                'source_file': file_entry.get('source_file'),
-                'start_time_seconds': chunk.get('start_time_seconds')
-            }
-            all_entries.append(entry)
+    # Use robust scanner to find chunk entries
+    all_entries = find_chunk_like_objects(manifest)
 
     if not all_entries:
-        print("No chunks found in manifest.")
+        print("No chunks found in manifest (after robust scan). Here is a brief dump of manifest keys to help debug:")
+        print("Top-level keys:", list(manifest.keys()))
+        # print a short sample to help user (do not dump huge manifests)
+        sample = json.dumps({k: manifest[k] for k in list(manifest.keys())[:5]}, indent=2, default=str)
+        print("Manifest sample (first 5 keys):", sample)
         sys.exit(0)
+
+    # Add optional source_file if missing (best-effort)
+    for e in all_entries:
+        if 'source_file' not in e or not e['source_file']:
+            e['source_file'] = manifest.get('source_file') or None
 
     out_flac_dir.mkdir(parents=True, exist_ok=True)
 
-    # Parallel extraction using threads (I/O bound)
     print(f"Starting extraction of {len(all_entries)} chunks with {workers} workers...")
     results = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -243,7 +308,7 @@ def main():
                 status, info = fut.result()
                 results.append((status, info, ent))
                 if status == 'ok':
-                    pass  # ok
+                    pass
                 elif status == 'skipped':
                     pass
                 elif status == 'mismatch':
@@ -253,7 +318,6 @@ def main():
             except Exception as e:
                 print("⚠️  Worker exception:", e)
 
-    # Summary
     ok_count = sum(1 for r in results if r[0] == 'ok')
     skip_count = sum(1 for r in results if r[0] == 'skipped')
     err_count = sum(1 for r in results if r[0] in ('mismatch','error'))
@@ -262,6 +326,7 @@ def main():
     # Optional reconstruction
     if args.reconstruct:
         print("\nReconstructing per-source WAVs (streaming)...")
+        # Here we try to map back to the manifest 'files' structure for reconstruction.
         for file_entry in manifest.get('files', []):
             status, info = reconstruct_wav_for_source(file_entry, out_flac_dir, out_wav_dir)
             if status == 'ok':
