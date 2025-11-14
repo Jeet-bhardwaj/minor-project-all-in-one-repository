@@ -1,0 +1,40 @@
+import { Tabs } from 'expo-router';
+import React from 'react';
+
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Colors } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+
+export default function TabLayout() {
+  const colorScheme = useColorScheme();
+
+  return (
+    <Tabs
+      screenOptions={{
+        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+        headerShown: false,
+      }}>
+      <Tabs.Screen
+        name="audio-to-image-tab"
+        options={{
+          title: 'Audio→Image',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="waveform" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="image-to-audio-tab"
+        options={{
+          title: 'Image→Audio',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="photo.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="explore"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gear" color={color} />,
+        }}
+      />
+    </Tabs>
+  );
+}
