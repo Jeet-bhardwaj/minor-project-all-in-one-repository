@@ -33,14 +33,30 @@ export default function EncryptionScreen() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
+        copyToCacheDirectory: true,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSelectedFile(result.assets[0]);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const file = result.assets[0];
+        
+        // Validate file size (max 100MB)
+        if (file.size && file.size > 100 * 1024 * 1024) {
+          Alert.alert('Error', 'File is too large. Maximum size is 100MB');
+          return;
+        }
+
+        setSelectedFile(file);
         setOutputFile(null);
+        setPassword('');
+        setConfirmPassword('');
       }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to pick file');
+    } catch (error: any) {
+      if (error.message && error.message.includes('cancelled')) {
+        // User cancelled file picker
+        return;
+      }
+      Alert.alert('Error', 'Failed to pick file. Please try again.');
+      console.error('File picker error:', error);
     }
   };
 

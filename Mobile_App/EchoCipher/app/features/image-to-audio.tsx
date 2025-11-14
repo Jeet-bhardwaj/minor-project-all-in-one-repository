@@ -41,14 +41,28 @@ export default function ImageToAudioScreen() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'image/*',
+        copyToCacheDirectory: true,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSelectedFile(result.assets[0]);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const file = result.assets[0];
+        
+        // Validate file size (max 100MB)
+        if (file.size && file.size > 100 * 1024 * 1024) {
+          Alert.alert('Error', 'Image file is too large. Maximum size is 100MB');
+          return;
+        }
+
+        setSelectedFile(file);
         setOutputFile(null);
       }
-    } catch (error) {
-      Alert.alert('Error', 'Failed to pick image file');
+    } catch (error: any) {
+      if (error.message && error.message.includes('cancelled')) {
+        // User cancelled file picker
+        return;
+      }
+      Alert.alert('Error', 'Failed to pick image file. Please try again.');
+      console.error('File picker error:', error);
     }
   };
 

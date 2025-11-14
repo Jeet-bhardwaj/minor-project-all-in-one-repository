@@ -22,6 +22,20 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="audio-to-image-tab"
+        options={{
+          title: 'Audio→Image',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="waveform" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="image-to-audio-tab"
+        options={{
+          title: 'Image→Audio',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="photo.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="explore"
         options={{
           title: 'Settings',

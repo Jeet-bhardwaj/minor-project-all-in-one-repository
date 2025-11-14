@@ -8,13 +8,21 @@
     "scheme": "echocipher",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSDocumentsFolderUsageDescription": "This app needs access to your documents to convert and encrypt files",
+        "NSMediaLibraryUsageDescription": "This app needs access to your media library"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/icon.png"
-      }
+      },
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "output": "static",
