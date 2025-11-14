@@ -1,20 +1,57 @@
 import React, { useState } from 'react';
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Alert, TextInput } from 'react-native';
+import {
+  StyleSheet,
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  TextInput,
+  ActivityIndicator,
+} from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
+import { encryptionApi } from '@/services/api';
 
 export default function EncryptionScreen() {
   const colorScheme = useColorScheme();
   const router = useRouter();
   const isDark = colorScheme === 'dark';
   const colors = Colors[isDark ? 'dark' : 'light'];
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [password, setPassword] = useState('');
-  const [encrypting, setEncrypting] = useState(false);
 
-  const handleSelectFile = () => {
-    Alert.alert('File Picker', 'File picker will be implemented here');
+  const [selectedFile, setSelectedFile] = useState<any>(null);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [encrypting, setEncrypting] = useState(false);
+  const [outputFile, setOutputFile] = useState<any>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const handleSelectFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setSelectedFile(result.assets[0]);
+        setOutputFile(null);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to pick file');
+    }
+  };
+
+  const getPasswordStrength = () => {
+    if (password.length === 0) return { level: 0, text: 'Enter password', color: '#EF4444' };
+    if (password.length < 8) return { level: 33, text: '⚠️ Weak', color: '#EF4444' };
+    if (password.length < 12) return { level: 66, text: '🟡 Medium', color: '#F59E0B' };
+    const hasNumbers = /\d/.test(password);
+    const hasSpecial = /[!@#$%^&*]/.test(password);
+    if (hasNumbers && hasSpecial) return { level: 100, text: '✅ Strong', color: '#10B981' };
+    return { level: 75, text: '🟡 Good', color: '#F59E0B' };
   };
 
   const handleEncrypt = async () => {
@@ -22,312 +59,236 @@ export default function EncryptionScreen() {
       Alert.alert('Error', 'Please select a file first');
       return;
     }
-    if (!password) {
-      Alert.alert('Error', 'Please enter a password');
+    if (!password || password.length < 8) {
+      Alert.alert('Error', 'Password must be at least 8 characters');
       return;
     }
-    setEncrypting(true);
-    setTimeout(() => {
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+
+    try {
+      setEncrypting(true);
+
+      const response = await encryptionApi.encryptFile(selectedFile.uri, password);
+
+      if (response.success && response.encryptedFile) {
+        setOutputFile(response.encryptedFile);
+        Alert.alert('Success', 'File encrypted successfully!');
+      } else {
+        Alert.alert('Error', 'Encryption failed. Please try again.');
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Encryption failed');
+      console.error(error);
+    } finally {
       setEncrypting(false);
-      Alert.alert('Success', 'File encrypted successfully!\nPassword protected file saved.');
-    }, 2000);
+    }
   };
+
+  const handleDownload = () => {
+    if (outputFile?.url) {
+      Alert.alert('Success', 'Encrypted file is ready for download');
+    }
+  };
+
+  const handleNewEncryption = () => {
+    setSelectedFile(null);
+    setOutputFile(null);
+    setPassword('');
+    setConfirmPassword('');
+  };
+
+  const strength = getPasswordStrength();
 
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.contentContainer}
     >
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Text style={[styles.backButtonText, { color: colors.tint }]}>← Back</Text>
+          <Text style={[styles.backButtonText, { color: colors.tint }]}>‹</Text>
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.text }]}>Encryption</Text>
+        <View style={{ width: 24 }} />
       </View>
 
-      {/* Info Box */}
-      <View style={[styles.infoBox, { backgroundColor: colors.tint + '15' }]}>
+      <View style={[styles.infoBox, { backgroundColor: colors.tint + '15', borderColor: colors.tint + '30' }]}>
         <Text style={styles.infoIcon}>🔒</Text>
         <Text style={[styles.infoText, { color: colors.text }]}>
-          Encrypt your audio or image files with military-grade encryption
+          Encrypt files with AES-256 military-grade encryption
         </Text>
       </View>
 
-      {/* File Selection */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Select File to Encrypt</Text>
-        <TouchableOpacity
-          style={[
-            styles.uploadBox,
-            {
-              backgroundColor: colors.tint + '15',
-              borderColor: colors.tint,
-            },
-          ]}
-          onPress={handleSelectFile}
-        >
-          <Text style={styles.uploadIcon}>📂</Text>
-          <Text style={[styles.uploadText, { color: colors.text }]}>
-            {selectedFile ? selectedFile : 'Tap to select file'}
-          </Text>
-          <Text style={[styles.uploadSubtext, { color: colors.icon }]}>
-            Audio: MP3, WAV, FLAC | Image: JPG, PNG, BMP
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {!outputFile ? (
+        <>
+          <TouchableOpacity
+            style={[styles.uploadBox, { borderColor: colors.tint, backgroundColor: colors.tint + '08' }]}
+            onPress={handleSelectFile}
+          >
+            <Text style={styles.uploadIcon}>📂</Text>
+            <Text style={[styles.uploadText, { color: colors.text }]}>
+              {selectedFile ? 'File Selected ✓' : 'Tap to select file'}
+            </Text>
+            {selectedFile && (
+              <Text style={[styles.fileName, { color: colors.icon }]}>
+                {selectedFile.name}
+              </Text>
+            )}
+          </TouchableOpacity>
 
-      {/* Password Section */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Set Password</Text>
-        <TextInput
-          style={[
-            styles.passwordInput,
-            {
-              backgroundColor: colors.tint + '08',
-              color: colors.text,
-              borderColor: colors.tint,
-            },
-          ]}
-          placeholder="Enter a strong password"
-          placeholderTextColor={colors.icon}
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-        />
-        <View style={styles.passwordStrength}>
-          <View
+          <View style={styles.passwordSection}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Set Password</Text>
+
+            <View style={[styles.passwordInputContainer, { borderColor: colors.tint + '50' }]}>
+              <TextInput
+                style={[styles.passwordInput, { color: colors.text }]}
+                placeholder="Enter password"
+                placeholderTextColor={colors.icon}
+                secureTextEntry={!showPassword}
+                value={password}
+                onChangeText={setPassword}
+              />
+              <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+                <Text style={styles.eyeIcon}>{showPassword ? '👁️' : '👁️‍🗨️'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.strengthContainer, { backgroundColor: colors.tint + '15' }]}>
+              <View style={[styles.strengthBar, { backgroundColor: '#E5E7EB' }]}>
+                <View
+                  style={[
+                    styles.strengthFill,
+                    { width: `${strength.level}%`, backgroundColor: strength.color },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.strengthText, { color: strength.color }]}>{strength.text}</Text>
+            </View>
+
+            <View style={[styles.passwordInputContainer, { borderColor: colors.tint + '50' }]}>
+              <TextInput
+                style={[styles.passwordInput, { color: colors.text }]}
+                placeholder="Confirm password"
+                placeholderTextColor={colors.icon}
+                secureTextEntry={!showConfirm}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+              />
+              <TouchableOpacity onPress={() => setShowConfirm(!showConfirm)}>
+                <Text style={styles.eyeIcon}>{showConfirm ? '👁️' : '👁️‍🗨️'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            {confirmPassword && password !== confirmPassword && (
+              <Text style={[styles.errorText, { color: '#EF4444' }]}>Passwords do not match</Text>
+            )}
+          </View>
+
+          <TouchableOpacity
             style={[
-              styles.strengthBar,
+              styles.encryptButton,
               {
-                backgroundColor: password.length > 12 ? '#10B981' : 
-                                password.length > 8 ? '#F59E0B' : '#EF4444',
-                width: `${Math.min(password.length * 8, 100)}%`,
+                backgroundColor:
+                  selectedFile && password.length >= 8 && password === confirmPassword
+                    ? colors.tint
+                    : colors.icon + '50',
+                opacity: encrypting ? 0.7 : 1,
               },
             ]}
-          />
-        </View>
-        <Text style={[styles.passwordHint, { color: colors.icon }]}>
-          {password.length === 0 
-            ? 'Enter at least 8 characters for security'
-            : password.length < 8
-            ? '⚠️ Weak password'
-            : password.length < 12
-            ? '🟡 Medium password'
-            : '✅ Strong password'}
-        </Text>
-      </View>
+            onPress={handleEncrypt}
+            disabled={!selectedFile || password.length < 8 || password !== confirmPassword || encrypting}
+          >
+            {encrypting ? (
+              <ActivityIndicator color="#fff" size="large" />
+            ) : (
+              <>
+                <Text style={styles.encryptIcon}>🔐</Text>
+                <Text style={styles.encryptButtonText}>Encrypt File</Text>
+              </>
+            )}
+          </TouchableOpacity>
 
-      {/* Encryption Options */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Encryption Options</Text>
-        <OptionCard
-          title="Algorithm"
-          value="AES-256"
-          colors={colors}
-        />
-        <OptionCard
-          title="Compression"
-          value="Enabled"
-          colors={colors}
-        />
-      </View>
+          <View style={[styles.tipsBox, { backgroundColor: colors.tint + '08', borderColor: colors.tint + '20' }]}>
+            <Text style={[styles.tipsTitle, { color: colors.text }]}>🔐 Security Tips</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Use a unique password</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Mix letters, numbers & symbols</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Keep password in safe place</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Encrypted file cannot be recovered without password</Text>
+          </View>
+        </>
+      ) : (
+        <>
+          <View style={[styles.successBox, { backgroundColor: colors.tint + '15', borderColor: colors.tint + '50' }]}>
+            <Text style={styles.successIcon}>✅</Text>
+            <Text style={[styles.successTitle, { color: colors.text }]}>Encryption Complete!</Text>
+            <Text style={[styles.successDetails, { color: colors.icon }]}>
+              File: {outputFile.filename}
+            </Text>
+            <Text style={[styles.successDetails, { color: colors.icon }]}>
+              Size: {(outputFile.size / 1024).toFixed(2)} KB
+            </Text>
+          </View>
 
-      {/* Encrypt Button */}
-      <TouchableOpacity
-        style={[
-          styles.encryptButton,
-          {
-            backgroundColor: colors.tint,
-            opacity: selectedFile && password.length >= 8 ? 1 : 0.5,
-          },
-        ]}
-        onPress={handleEncrypt}
-        disabled={!selectedFile || password.length < 8 || encrypting}
-      >
-        <Text style={[styles.encryptButtonText, { color: colors.background }]}>
-          {encrypting ? 'Encrypting...' : 'Encrypt File'}
-        </Text>
-      </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.downloadButton, { backgroundColor: colors.tint }]}
+            onPress={handleDownload}
+          >
+            <Text style={styles.downloadIcon}>⬇️</Text>
+            <Text style={styles.downloadButtonText}>Download Encrypted File</Text>
+          </TouchableOpacity>
 
-      {/* Security Tips */}
-      <View style={styles.tipsSection}>
-        <Text style={[styles.tipsTitle, { color: colors.text }]}>🔐 Security Tips</Text>
-        <Text style={[styles.tipText, { color: colors.icon }]}>
-          • Use a strong, unique password{'\n'}
-          • Never share your password{'\n'}
-          • Keep a backup of your password{'\n'}
-          • Use mix of letters, numbers, and symbols
-        </Text>
-      </View>
+          <TouchableOpacity
+            style={[styles.newButton, { borderColor: colors.tint }]}
+            onPress={handleNewEncryption}
+          >
+            <Text style={[styles.newButtonText, { color: colors.tint }]}>Encrypt Another</Text>
+          </TouchableOpacity>
+        </>
+      )}
     </ScrollView>
   );
 }
 
-interface OptionCardProps {
-  title: string;
-  value: string;
-  colors: any;
-}
-
-function OptionCard({ title, value, colors }: OptionCardProps) {
-  return (
-    <View
-      style={[
-        styles.optionCard,
-        {
-          backgroundColor: colors.tint + '08',
-          borderColor: colors.tint + '30',
-        },
-      ]}
-    >
-      <Text style={[styles.optionTitle, { color: colors.text }]}>{title}</Text>
-      <Text style={[styles.optionValue, { color: colors.tint }]}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  contentContainer: {
-    paddingHorizontal: 15,
-    paddingVertical: 15,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  backButton: {
-    paddingRight: 10,
-  },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    flex: 1,
-  },
-  infoBox: {
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-  },
-  infoIcon: {
-    fontSize: 40,
-    marginRight: 12,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '500',
-    lineHeight: 20,
-  },
-  section: {
-    marginBottom: 25,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  uploadBox: {
-    borderRadius: 12,
-    padding: 20,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderStyle: 'dashed',
-  },
-  uploadIcon: {
-    fontSize: 48,
-    marginBottom: 10,
-  },
-  uploadText: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  uploadSubtext: {
-    fontSize: 12,
-    fontWeight: '400',
-  },
-  passwordInput: {
-    borderRadius: 10,
-    borderWidth: 2,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    marginBottom: 10,
-  },
-  passwordStrength: {
-    height: 4,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  strengthBar: {
-    height: '100%',
-    borderRadius: 2,
-  },
-  passwordHint: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  optionCard: {
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderWidth: 1,
-  },
-  optionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  optionValue: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  encryptButton: {
-    borderRadius: 10,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginBottom: 25,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3,
-  },
-  encryptButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  tipsSection: {
-    backgroundColor: '#9333EA15',
-    borderRadius: 10,
-    padding: 15,
-    borderLeftWidth: 4,
-    borderLeftColor: '#9333EA',
-  },
-  tipsTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  tipText: {
-    fontSize: 12,
-    fontWeight: '400',
-    lineHeight: 18,
-  },
+  container: { flex: 1 },
+  contentContainer: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 30 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, marginTop: 8 },
+  backButton: { padding: 8 },
+  backButtonText: { fontSize: 24, fontWeight: '600' },
+  title: { fontSize: 24, fontWeight: '700' },
+  infoBox: { borderRadius: 12, padding: 16, marginBottom: 24, alignItems: 'center', borderWidth: 1 },
+  infoIcon: { fontSize: 32, marginBottom: 8 },
+  infoText: { fontSize: 14, fontWeight: '500', textAlign: 'center', lineHeight: 20 },
+  uploadBox: { borderRadius: 12, padding: 24, marginBottom: 20, alignItems: 'center', borderWidth: 2, borderStyle: 'dashed' },
+  uploadIcon: { fontSize: 48, marginBottom: 12 },
+  uploadText: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
+  fileName: { fontSize: 12, marginTop: 8 },
+  passwordSection: { marginBottom: 20 },
+  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12 },
+  passwordInputContainer: { borderRadius: 10, borderWidth: 2, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginBottom: 12 },
+  passwordInput: { flex: 1, paddingVertical: 12, fontSize: 14 },
+  eyeIcon: { fontSize: 18, padding: 8 },
+  strengthContainer: { borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1 },
+  strengthBar: { height: 6, borderRadius: 3, overflow: 'hidden', marginBottom: 8 },
+  strengthFill: { height: '100%', borderRadius: 3 },
+  strengthText: { fontSize: 12, fontWeight: '600' },
+  errorText: { fontSize: 12, marginTop: -8, marginBottom: 8 },
+  encryptButton: { borderRadius: 10, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginBottom: 24 },
+  encryptIcon: { fontSize: 20, marginRight: 8 },
+  encryptButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  tipsBox: { borderRadius: 10, padding: 16, borderWidth: 1 },
+  tipsTitle: { fontSize: 14, fontWeight: '600', marginBottom: 12 },
+  tipItem: { fontSize: 12, lineHeight: 18 },
+  successBox: { borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 20, borderWidth: 2 },
+  successIcon: { fontSize: 48, marginBottom: 12 },
+  successTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  successDetails: { fontSize: 13, marginTop: 4 },
+  downloadButton: { borderRadius: 10, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
+  downloadIcon: { fontSize: 18, marginRight: 8 },
+  downloadButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  newButton: { borderRadius: 10, borderWidth: 2, padding: 14, alignItems: 'center' },
+  newButtonText: { fontSize: 14, fontWeight: '600' },
 });
