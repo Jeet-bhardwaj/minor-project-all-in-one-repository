@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, ActivityIndicator, Alert, KeyboardAvoidingView, TextInput, Platform } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRouter } from 'expo-router';
 
 export default function LoginScreen() {
   const colorScheme = useColorScheme();
@@ -11,7 +11,12 @@ export default function LoginScreen() {
   const colors = Colors[isDark ? 'dark' : 'light'];
   const { signInWithGoogle, isSignedIn } = useAuth();
   const navigation = useNavigation();
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState({ email: '', password: '' });
 
   useEffect(() => {
     if (isSignedIn) {
@@ -43,171 +48,340 @@ export default function LoginScreen() {
     }
   };
 
+  const validateForm = () => {
+    let valid = true;
+    const newErrors = { email: '', password: '' };
+
+    if (!email.trim()) {
+      newErrors.email = 'Email is required';
+      valid = false;
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      newErrors.email = 'Invalid email format';
+      valid = false;
+    }
+
+    if (!password) {
+      newErrors.password = 'Password is required';
+      valid = false;
+    }
+
+    setErrors(newErrors);
+    return valid;
+  };
+
+  const handleLogin = async () => {
+    if (!validateForm()) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      // Mock login - replace with actual API call
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Simulate successful login
+      const mockGoogleData = {
+        id: Math.random().toString(),
+        email: email,
+        name: email.split('@')[0],
+        picture: 'https://via.placeholder.com/200',
+      };
+      
+      await signInWithGoogle(mockGoogleData);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to login. Please try again.');
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={[styles.container, { backgroundColor: colors.background }]}
+    >
+      {/* Header with Back Button */}
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.backButton}
+        >
+          <Text style={[styles.backIcon, { color: colors.text }]}>‹</Text>
+        </TouchableOpacity>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Log In</Text>
+        <View style={{ width: 24 }} />
+      </View>
+
       {/* Logo Section */}
       <View style={styles.logoContainer}>
-        <Text style={[styles.logo, { color: colors.tint }]}>🎵</Text>
+        <Text style={styles.logo}>🎵</Text>
         <Text style={[styles.appName, { color: colors.text }]}>EchoCipher</Text>
-        <Text style={[styles.tagline, { color: colors.icon }]}>
-          Convert, Encrypt, Transform
-        </Text>
       </View>
 
-      {/* Welcome Text */}
-      <View style={styles.welcomeContainer}>
-        <Text style={[styles.welcomeTitle, { color: colors.text }]}>
-          Welcome Back
-        </Text>
-        <Text style={[styles.welcomeSubtitle, { color: colors.icon }]}>
-          Sign in to access all features
-        </Text>
-      </View>
+      {/* Form */}
+      <View style={styles.formContainer}>
+        {/* Email */}
+        <View style={styles.inputGroup}>
+          <Text style={[styles.label, { color: colors.text }]}>Email</Text>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.tint + '08',
+                color: colors.text,
+                borderColor: errors.email ? '#FF3B30' : colors.icon + '30',
+              },
+            ]}
+            placeholder="your@email.com"
+            placeholderTextColor={colors.icon + '60'}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            value={email}
+            onChangeText={(text) => {
+              setEmail(text);
+              if (errors.email) setErrors({ ...errors, email: '' });
+            }}
+          />
+          {errors.email && (
+            <Text style={styles.errorText}>{errors.email}</Text>
+          )}
+        </View>
 
-      {/* Features Preview */}
-      <View style={styles.featuresContainer}>
-        <FeatureItem
-          icon="🎵"
-          title="Audio to Image"
-          description="Convert your audio to stunning images"
-          colors={colors}
-        />
-        <FeatureItem
-          icon="🖼️"
-          title="Image to Audio"
-          description="Transform images back to audio"
-          colors={colors}
-        />
-        <FeatureItem
-          icon="🔒"
-          title="Encrypt & Decrypt"
-          description="Secure your files with AES-256"
-          colors={colors}
-        />
-      </View>
+        {/* Password */}
+        <View style={styles.inputGroup}>
+          <View style={styles.passwordLabelContainer}>
+            <Text style={[styles.label, { color: colors.text }]}>Password</Text>
+            <TouchableOpacity>
+              <Text style={[styles.forgotText, { color: colors.tint }]}>Forgot?</Text>
+            </TouchableOpacity>
+          </View>
+          <View
+            style={[
+              styles.passwordInput,
+              {
+                backgroundColor: colors.tint + '08',
+                borderColor: errors.password ? '#FF3B30' : colors.icon + '30',
+              },
+            ]}
+          >
+            <TextInput
+              style={[styles.passwordField, { color: colors.text, flex: 1 }]}
+              placeholder="Enter password"
+              placeholderTextColor={colors.icon + '60'}
+              secureTextEntry={!showPassword}
+              value={password}
+              onChangeText={(text) => {
+                setPassword(text);
+                if (errors.password) setErrors({ ...errors, password: '' });
+              }}
+            />
+            <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+              <Text style={[styles.eyeIcon, { color: colors.icon }]}>
+                {showPassword ? '👁' : '👁️‍🗨️'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {errors.password && (
+            <Text style={styles.errorText}>{errors.password}</Text>
+          )}
+        </View>
 
-      {/* Sign In Button */}
-      <View style={styles.buttonContainer}>
+        {/* Login Button */}
         <TouchableOpacity
-          style={[styles.googleButton, { backgroundColor: colors.tint }]}
-          onPress={handleGoogleSignIn}
+          style={[
+            styles.loginButton,
+            { backgroundColor: colors.tint, opacity: loading ? 0.7 : 1 },
+          ]}
+          onPress={handleLogin}
           disabled={loading}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <>
-              <Text style={styles.googleButtonIcon}>🔐</Text>
-              <Text style={styles.googleButtonText}>Sign in with Google</Text>
-            </>
+            <Text style={styles.loginButtonText}>Log In</Text>
           )}
         </TouchableOpacity>
 
-        <Text style={[styles.termsText, { color: colors.icon }]}>
-          By signing in, you agree to our Terms of Service
-        </Text>
+        {/* Divider */}
+        <View style={styles.divider}>
+          <View style={[styles.dividerLine, { backgroundColor: colors.icon + '30' }]} />
+          <Text style={[styles.dividerText, { color: colors.icon }]}>OR</Text>
+          <View style={[styles.dividerLine, { backgroundColor: colors.icon + '30' }]} />
+        </View>
+
+        {/* Google Button */}
+        <TouchableOpacity
+          style={[
+            styles.googleButton,
+            { borderColor: colors.icon + '30', backgroundColor: colors.tint + '10' },
+          ]}
+          onPress={handleGoogleSignIn}
+          disabled={loading}
+        >
+          <Text style={styles.googleIcon}>🔐</Text>
+          <Text style={[styles.googleText, { color: colors.text }]}>
+            Continue with Google
+          </Text>
+        </TouchableOpacity>
+
+        {/* Sign Up Link */}
+        <View style={styles.signupContainer}>
+          <Text style={[styles.signupText, { color: colors.icon }]}>
+            Don't have an account?{' '}
+          </Text>
+          <TouchableOpacity onPress={() => router.push('/auth/register')}>
+            <Text style={[styles.signupLink, { color: colors.tint }]}>
+              Create one
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
-
-interface FeatureItemProps {
-  icon: string;
-  title: string;
-  description: string;
-  colors: any;
-}
-
-const FeatureItem: React.FC<FeatureItemProps> = ({ icon, title, description, colors }) => (
-  <View style={[styles.featureItem, { borderColor: colors.tint + '20' }]}>
-    <Text style={styles.featureIcon}>{icon}</Text>
-    <Text style={[styles.featureTitle, { color: colors.text }]}>{title}</Text>
-    <Text style={[styles.featureDescription, { color: colors.icon }]}>
-      {description}
-    </Text>
-  </View>
-);
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingVertical: 40,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 20,
+  },
+  backButton: {
+    padding: 8,
+  },
+  backIcon: {
+    fontSize: 24,
+    fontWeight: '600',
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: '700',
   },
   logoContainer: {
     alignItems: 'center',
-    marginTop: 20,
+    marginVertical: 20,
   },
   logo: {
-    fontSize: 60,
-    marginBottom: 12,
+    fontSize: 48,
+    marginBottom: 8,
   },
   appName: {
-    fontSize: 28,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  tagline: {
-    fontSize: 14,
-    fontStyle: 'italic',
-  },
-  welcomeContainer: {
-    marginVertical: 20,
-  },
-  welcomeTitle: {
     fontSize: 24,
+    fontWeight: '700',
+  },
+  formContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  label: {
+    fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
   },
-  welcomeSubtitle: {
-    fontSize: 14,
+  passwordLabelContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
   },
-  featuresContainer: {
+  forgotText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+  },
+  passwordInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  passwordField: {
+    fontSize: 15,
+  },
+  eyeIcon: {
+    fontSize: 18,
+    marginLeft: 8,
+  },
+  errorText: {
+    color: '#FF3B30',
+    fontSize: 12,
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  loginButton: {
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  loginButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginVertical: 20,
   },
-  featureItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 12,
+  dividerLine: {
+    flex: 1,
+    height: 1,
   },
-  featureIcon: {
-    fontSize: 20,
-    marginBottom: 8,
-  },
-  featureTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  featureDescription: {
-    fontSize: 12,
-  },
-  buttonContainer: {
-    marginBottom: 20,
+  dividerText: {
+    marginHorizontal: 12,
+    fontSize: 13,
+    fontWeight: '500',
   },
   googleButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 12,
-    marginBottom: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 20,
   },
-  googleButtonIcon: {
-    fontSize: 20,
-    marginRight: 10,
+  googleIcon: {
+    fontSize: 18,
+    marginRight: 8,
   },
-  googleButtonText: {
-    color: '#fff',
-    fontSize: 16,
+  googleText: {
+    fontSize: 15,
     fontWeight: '600',
   },
-  termsText: {
-    fontSize: 12,
-    textAlign: 'center',
-    marginTop: 12,
+  signupContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  signupText: {
+    fontSize: 14,
+  },
+  signupLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
 });

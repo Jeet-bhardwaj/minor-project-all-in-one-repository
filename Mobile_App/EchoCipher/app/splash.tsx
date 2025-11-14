@@ -15,7 +15,7 @@ export default function SplashScreen() {
   useEffect(() => {
     // Auto-navigate after 5 seconds
     const timer = setTimeout(() => {
-      router.replace('/auth/login');
+      router.replace('/auth/welcome');
     }, 5000);
 
     return () => clearTimeout(timer);
