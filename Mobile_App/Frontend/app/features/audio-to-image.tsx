@@ -75,17 +75,30 @@ export default function AudioToImageScreen() {
     try {
       setConverting(true);
 
-      const response = await conversionApi.audioToImage(selectedFile.uri, options);
+      // Call the corrected API endpoint
+      const response = await conversionApi.audioToImage(
+        selectedFile,
+        'user-' + Date.now(),
+        {
+          compress: true,
+          deleteSource: false,
+        }
+      );
 
-      if (response.success && response.outputFile) {
-        setOutputFile(response.outputFile);
-        Alert.alert('Success', 'Audio converted to image successfully!');
+      if (response.success && response.images) {
+        // Create a mock output file for display
+        setOutputFile({
+          filename: response.images[0] || 'converted.png',
+          size: 102400, // Mock size
+          url: '#',
+        });
+        Alert.alert('Success', `Audio converted to ${response.imageCount} image(s)!`);
       } else {
-        Alert.alert('Error', 'Conversion failed. Please try again.');
+        Alert.alert('Error', response.message || 'Conversion failed. Please try again.');
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Conversion failed');
-      console.error(error);
+      console.error('Conversion error:', error);
+      Alert.alert('Error', error.message || 'Network error. Make sure backend is running on port 3000.');
     } finally {
       setConverting(false);
     }

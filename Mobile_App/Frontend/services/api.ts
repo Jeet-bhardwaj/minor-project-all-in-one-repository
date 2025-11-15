@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // API Configuration
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000/api';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -153,51 +153,71 @@ export const fileApi = {
 // ============ CONVERSION ENDPOINTS ============
 export const conversionApi = {
   audioToImage: async (
-    audioFile: File | string,
+    audioFile: any,
+    userId?: string,
     options?: {
-      resolution?: string;
-      colorMode?: string;
-      format?: string;
+      compress?: boolean;
+      deleteSource?: boolean;
+      masterKeyHex?: string;
     }
-  ): Promise<ConversionResponse> => {
+  ): Promise<any> => {
     const formData = new FormData();
-    if (typeof audioFile === 'string') {
-      formData.append('audioUrl', audioFile);
+    
+    // Handle both file objects and URIs
+    if (audioFile?.uri) {
+      const response = await fetch(audioFile.uri);
+      const blob = await response.blob();
+      formData.append('audioFile', blob, audioFile.name || 'audio.mp3');
+    } else if (audioFile instanceof File || audioFile instanceof Blob) {
+      formData.append('audioFile', audioFile);
     } else {
-      formData.append('audio', audioFile);
+      throw new Error('Invalid audio file');
     }
-    if (options) {
-      formData.append('options', JSON.stringify(options));
-    }
+    
+    if (userId) formData.append('userId', userId);
+    if (options?.compress) formData.append('compress', 'true');
+    if (options?.deleteSource) formData.append('deleteSource', 'true');
+    if (options?.masterKeyHex) formData.append('masterKeyHex', options.masterKeyHex);
 
-    const response = await apiClient.post<any>('/conversion/audio-to-image', formData, {
+    const response = await apiClient.post<any>('/convert/audio-to-image', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000, // 5 minutes for large files
     });
-    return response.data.data;
+    return response.data;
   },
 
   imageToAudio: async (
-    imageFile: File | string,
+    imageDirPath: string,
+    outputFileName: string,
+    userId?: string,
     options?: {
-      quality?: string;
-      sampleRate?: string;
-      format?: string;
+      masterKeyHex?: string;
     }
-  ): Promise<ConversionResponse> => {
-    const formData = new FormData();
-    if (typeof imageFile === 'string') {
-      formData.append('imageUrl', imageFile);
-    } else {
-      formData.append('image', imageFile);
-    }
-    if (options) {
-      formData.append('options', JSON.stringify(options));
-    }
-
-    const response = await apiClient.post<any>('/conversion/image-to-audio', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+  ): Promise<any> => {
+    const response = await apiClient.post<any>('/convert/image-to-audio', {
+      imageDirPath,
+      outputFileName,
+      userId: userId || 'user-' + Date.now(),
+      ...options,
     });
-    return response.data.data;
+    return response.data;
+  },
+
+  listConversions: async (): Promise<any> => {
+    const response = await apiClient.get<any>('/conversions');
+    return response.data;
+  },
+
+  getConversionStatus: async (conversionId: string): Promise<any> => {
+    const response = await apiClient.get<any>(`/conversions/${conversionId}`);
+    return response.data;
+  },
+
+  downloadFile: async (conversionId: string, fileName: string): Promise<any> => {
+    const response = await apiClient.get<any>(`/conversions/${conversionId}/${fileName}`, {
+      responseType: 'blob',
+    });
+    return response.data;
   },
 };
 
