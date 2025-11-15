@@ -1,8 +1,14 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
 // API Configuration
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000/api';
+// For physical devices and Expo Go app: use your machine's IP address
+// For web/localhost: use localhost
+const API_BASE_URL = 
+  Platform.OS === 'web' 
+    ? (process.env.EXPO_PUBLIC_LOCAL_URL || 'http://localhost:3000/api')
+    : (process.env.EXPO_PUBLIC_API_URL || 'http://192.168.29.67:3000/api');
 
 export interface ApiResponse<T = any> {
   success: boolean;
