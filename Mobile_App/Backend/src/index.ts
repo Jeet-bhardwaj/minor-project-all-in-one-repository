@@ -2,11 +2,24 @@ import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
+import conversionRoutes from './routes/conversionRoutes';
+import { connectDB, isDBConnected } from './config/database';
+import Logger from './utils/logger';
 
 dotenv.config();
 
 const app: Express = express();
 const PORT = process.env.PORT || 3000;
+
+// Initialize database connection
+(async () => {
+  try {
+    await connectDB();
+  } catch (error) {
+    Logger.error('STARTUP', 'Failed to connect to MongoDB');
+    process.exit(1);
+  }
+})();
 
 // Middleware
 app.use(cors({
@@ -19,11 +32,13 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Conversion API routes
+app.use('/api', conversionRoutes);
+
 // Request logging middleware
 app.use((req: Request, _res: Response, next: NextFunction) => {
   const requestId = uuidv4();
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${req.method} ${req.path} - ID: ${requestId}`);
+  Logger.debug('API', `${req.method} ${req.path}`, { requestId });
   next();
 });
 
@@ -33,7 +48,8 @@ app.get('/health', (_req: Request, res: Response) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    database: isDBConnected() ? 'connected' : 'disconnected'
   });
 });
 
@@ -42,6 +58,7 @@ app.get('/api/status', (_req: Request, res: Response) => {
   res.json({
     message: 'EchoCipher Backend API',
     version: '1.0.0',
+    database: isDBConnected() ? 'connected' : 'disconnected',
     endpoints: {
       'POST /api/audio-to-image': 'Convert audio to image',
       'POST /api/image-to-audio': 'Convert image to audio',
@@ -64,7 +81,7 @@ app.use((_req: Request, res: Response) => {
 
 // Error handler
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('[ERROR]', err);
+  Logger.error('API', `Request error: ${err.message}`);
   res.status(err.status || 500).json({
     error: err.message || 'Internal Server Error',
     timestamp: new Date().toISOString()
@@ -73,10 +90,11 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 EchoCipher Backend running on port ${PORT}`);
-  console.log(`📝 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔧 API Status: http://localhost:${PORT}/api/status`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  Logger.info('STARTUP', `🚀 EchoCipher Backend running on port ${PORT}`);
+  Logger.info('STARTUP', `📝 Health check: http://localhost:${PORT}/health`);
+  Logger.info('STARTUP', `🔧 API Status: http://localhost:${PORT}/api/status`);
+  Logger.info('STARTUP', `🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  Logger.info('STARTUP', `🗄️  Database: ${isDBConnected() ? 'Connected' : 'Connecting...'}`);
 });
 
 export default app;
