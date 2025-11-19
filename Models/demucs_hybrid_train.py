@@ -1,26 +1,25 @@
+#!/usr/bin/env python3
 """
-Demucs-style hybrid waveform denoiser + training script
+Demucs-style hybrid waveform denoiser + training script (single-file)
+
 - PyTorch implementation (single-file) for training a high-quality speech enhancement model.
 - Architecture: U-Net style encoder/decoder (1D conv) with Transformer encoder in the bottleneck.
 - Losses: SI-SDR + Multi-resolution STFT magnitude loss + L1 waveform loss.
 - Dataset: on-the-fly mixture creation from clean speech and noise folders (supports RIR convolution if provided).
 - Saves checkpoints and exports an ONNX for inference.
 
-Usage (example):
-  python demucs_hybrid_train.py --clean_dir /path/to/clean_speech --noise_dir /path/to/noises --out_dir ./checkpoints --sr 16000 --batch 8 --epochs 200
+Usage example:
+  python demucs_hybrid_train.py --clean_dir /path/to/clean --noise_dir /path/to/noise --out_dir ./checkpoints --sr 16000 --batch 8 --epochs 200
 
-Notes:
-- Requires: torch, torchaudio, numpy, tqdm
-- Works with single GPU or CPU fallback. Uses AMP when GPU available.
-- This is a strong, practical baseline — you can swap encoder/transformer sizes in the args.
+Requires: torch, torchaudio, numpy, tqdm
 """
-
+from pathlib import Path
+from glob import glob
 import argparse
 import math
 import os
 import random
-from glob import glob
-from pathlib import Path
+import sys
 
 import numpy as np
 import torch
@@ -36,13 +35,15 @@ def set_seed(seed: int = 42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def load_wav(path, sr):
     wav, r = torchaudio.load(path)
     if r != sr:
         wav = torchaudio.functional.resample(wav, r, sr)
+    # to mono
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
     return wav.squeeze(0)
@@ -58,8 +59,8 @@ class OnTheFlyMixtureDataset(Dataset):
         super().__init__()
         self.clean_files = glob(os.path.join(clean_dir, "**", "*.wav"), recursive=True)
         self.noise_files = glob(os.path.join(noise_dir, "**", "*.wav"), recursive=True)
-        assert len(self.clean_files) > 0, "No clean files found"
-        assert len(self.noise_files) > 0, "No noise files found"
+        assert len(self.clean_files) > 0, f"No clean files found in {clean_dir}"
+        assert len(self.noise_files) > 0, f"No noise files found in {noise_dir}"
         self.sr = sr
         self.seg_samples = int(seg_len * sr)
         self.rir_files = glob(os.path.join(rir_dir, "**", "*.wav"), recursive=True) if rir_dir else []
@@ -67,17 +68,18 @@ class OnTheFlyMixtureDataset(Dataset):
         self.max_snr = max_snr
 
     def __len__(self):
-        return 10_000_000  # effectively infinite — data created on the fly
+        # effectively infinite — data created on the fly
+        return 10_000_000
 
     def _random_crop(self, wav, length):
-        if len(wav) <= length:
-            # pad
-            pad = length - len(wav)
+        if wav.numel() <= length:
+            # pad both sides
+            pad = length - wav.numel()
             left = pad // 2
             right = pad - left
             return F.pad(wav, (left, right))
         else:
-            start = random.randint(0, len(wav) - length)
+            start = random.randint(0, wav.numel() - length)
             return wav[start:start + length]
 
     def _maybe_apply_rir(self, wav):
@@ -85,8 +87,12 @@ class OnTheFlyMixtureDataset(Dataset):
             rir = load_wav(random.choice(self.rir_files), self.sr)
             # normalize RIR energy
             rir = rir / (torch.norm(rir) + 1e-9)
-            wav = F.conv1d(wav.unsqueeze(0).unsqueeze(0), rir.flip(0).unsqueeze(0).unsqueeze(0), padding=rir.numel() - 1)
-            wav = wav.squeeze()
+            # conv1d expects (B, C, T) for input and (out_ch, in_ch, k) for kernel
+            # here we treat both as single-channel
+            wav_unsq = wav.unsqueeze(0).unsqueeze(0)  # (1,1,T)
+            rir_kernel = rir.flip(0).unsqueeze(0).unsqueeze(0)  # (1,1,K)
+            conv = F.conv1d(wav_unsq, rir_kernel, padding=rir.numel() - 1)
+            return conv.squeeze()
         return wav
 
     def __getitem__(self, idx):
@@ -100,9 +106,8 @@ class OnTheFlyMixtureDataset(Dataset):
         noise_path = random.choice(self.noise_files)
         noise = load_wav(noise_path, self.sr)
         # ensure noise long enough
-        if len(noise) < self.seg_samples:
-            # tile
-            n_repeat = math.ceil(self.seg_samples / len(noise))
+        if noise.numel() < self.seg_samples:
+            n_repeat = math.ceil(self.seg_samples / max(1, noise.numel()))
             noise = noise.repeat(n_repeat)
         noise = self._random_crop(noise, self.seg_samples)
 
@@ -122,7 +127,7 @@ class OnTheFlyMixtureDataset(Dataset):
             noisy = noisy / peak * 0.999
             clean = clean / peak * 0.999
 
-        return noisy.unsqueeze(0), clean.unsqueeze(0)
+        return noisy.unsqueeze(0).float(), clean.unsqueeze(0).float()
 
 
 # ----------------------------- Model -----------------------------
@@ -157,7 +162,7 @@ class ResidualConvBlock(nn.Module):
 class EncoderBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel_size=15, downsample=4):
         super().__init__()
-        self.conv = ConvBlock(in_ch, out_ch, kernel_size=kernel_size, stride=downsample, padding=kernel_size // 2)
+        self.conv = ConvBlock(in_ch, out_ch, kernel_size=kernel_size, stride=downsample if downsample > 1 else 1, padding=kernel_size // 2)
         self.res = ResidualConvBlock(out_ch)
 
     def forward(self, x):
@@ -169,7 +174,11 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel_size=15, upsample=4):
         super().__init__()
-        self.up = nn.ConvTranspose1d(in_ch, out_ch, kernel_size=upsample, stride=upsample)
+        if upsample > 1:
+            self.up = nn.ConvTranspose1d(in_ch, out_ch, kernel_size=upsample, stride=upsample)
+        else:
+            # when upsample==1, use 1x1 conv to map channels
+            self.up = nn.Conv1d(in_ch, out_ch, kernel_size=1)
         self.res = ResidualConvBlock(out_ch)
 
     def forward(self, x, skip=None):
@@ -188,9 +197,9 @@ class DecoderBlock(nn.Module):
 class TransformerBottleneck(nn.Module):
     def __init__(self, channels, n_heads=8, n_layers=4, dropout=0.1):
         super().__init__()
-        # Project to embed dim
+        # Project to embed dim (keep same channels to simplify)
         self.proj_in = nn.Conv1d(channels, channels, kernel_size=1)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=channels, nhead=n_heads, dropout=dropout, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=channels, nhead=min(n_heads, channels), dropout=dropout, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
         self.proj_out = nn.Conv1d(channels, channels, kernel_size=1)
 
@@ -211,20 +220,25 @@ class DemucsHybrid(nn.Module):
         self.decoders = nn.ModuleList()
         ch = in_channels
         channels = []
+        # encoder stack
         for i in range(depth):
             out_ch = base_channels * (2 ** i)
-            self.encoders.append(EncoderBlock(ch, out_ch, kernel_size=kernel_size, downsample=downsample if i > 0 else 1))
+            ds = downsample if i > 0 else 1
+            self.encoders.append(EncoderBlock(ch, out_ch, kernel_size=kernel_size, downsample=ds))
             channels.append(out_ch)
             ch = out_ch
 
+        # bottleneck transformer
         self.bottleneck = TransformerBottleneck(channels[-1], n_layers=transformer_layers)
 
+        # decoder stack (reverse)
         for i in reversed(range(depth)):
             in_ch = channels[i]
             out_ch = channels[i - 1] if i > 0 else base_channels
-            self.decoders.append(DecoderBlock(in_ch, out_ch, kernel_size=kernel_size, upsample=downsample if i > 0 else 1))
+            us = downsample if i > 0 else 1
+            self.decoders.append(DecoderBlock(in_ch, out_ch, kernel_size=kernel_size, upsample=us))
 
-        # final conv
+        # final conv to one channel
         self.final = nn.Conv1d(base_channels, 1, kernel_size=1)
 
     def forward(self, x):
@@ -236,11 +250,11 @@ class DemucsHybrid(nn.Module):
             skips.append(out)
         out = self.bottleneck(out)
         for dec_idx, dec in enumerate(self.decoders):
+            # matching skip from encoder
             skip = skips[-(dec_idx + 1)] if dec_idx < len(skips) else None
             out = dec(out, skip)
         out = self.final(out)
-        # residual connection
-        # match length
+        # residual connection (match length)
         if out.size(-1) != x.size(-1):
             if out.size(-1) > x.size(-1):
                 out = out[..., :x.size(-1)]
@@ -250,12 +264,12 @@ class DemucsHybrid(nn.Module):
 
 
 # ----------------------------- Losses -----------------------------
-
 def si_sdr(pred, target, eps=1e-8):
     # pred, target: (B, T)
     pred = pred - pred.mean(dim=-1, keepdim=True)
     target = target - target.mean(dim=-1, keepdim=True)
-    s_target = torch.sum(pred * target, dim=-1, keepdim=True) * target / (torch.sum(target ** 2, dim=-1, keepdim=True) + eps)
+    # projection
+    s_target = (torch.sum(pred * target, dim=-1, keepdim=True) * target) / (torch.sum(target ** 2, dim=-1, keepdim=True) + eps)
     e_noise = pred - s_target
     si_sdr_val = 10 * torch.log10((torch.sum(s_target ** 2, dim=-1) + eps) / (torch.sum(e_noise ** 2, dim=-1) + eps) + eps)
     return -si_sdr_val.mean()
@@ -264,6 +278,7 @@ def si_sdr(pred, target, eps=1e-8):
 class MultiResolutionSTFTLoss(nn.Module):
     def __init__(self, fft_sizes=[512, 1024, 2048], hop_sizes=[50, 120, 240], win_lengths=[240, 600, 1200]):
         super().__init__()
+        assert len(fft_sizes) == len(hop_sizes) == len(win_lengths)
         self.fft_sizes = fft_sizes
         self.hop_sizes = hop_sizes
         self.win_lengths = win_lengths
@@ -290,15 +305,17 @@ class MultiResolutionSTFTLoss(nn.Module):
 
 
 # ----------------------------- Training Loop -----------------------------
-
 def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
 
     set_seed(args.seed)
 
-    ds = OnTheFlyMixtureDataset(args.clean_dir, args.noise_dir, sr=args.sr, seg_len=args.seg_len, rir_dir=args.rir_dir, min_snr=args.min_snr, max_snr=args.max_snr)
-    loader = DataLoader(ds, batch_size=args.batch, num_workers=args.workers, pin_memory=True)
+    ds = OnTheFlyMixtureDataset(args.clean_dir, args.noise_dir, sr=args.sr, seg_len=args.seg_len,
+                                rir_dir=args.rir_dir, min_snr=args.min_snr, max_snr=args.max_snr)
+
+    # Windows users often need num_workers=0; keep default in CLI but allow override
+    loader = DataLoader(ds, batch_size=args.batch, num_workers=args.workers, pin_memory=(device.type == 'cuda'))
 
     model = DemucsHybrid(in_channels=1, base_channels=args.base_channels, depth=args.depth, transformer_layers=args.transformer_layers)
     model.to(device)
@@ -319,14 +336,19 @@ def train(args):
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
-        scheduler.load_state_dict(ckpt.get('scheduler', {}))
+        # scheduler may be missing in older ckpts
+        if 'scheduler' in ckpt and isinstance(ckpt['scheduler'], dict):
+            try:
+                scheduler.load_state_dict(ckpt['scheduler'])
+            except Exception:
+                pass
         start_epoch = ckpt.get('epoch', 0)
         print('Resumed from', args.resume)
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
         running_loss = 0.0
-        pbar = tqdm(enumerate(loader), total=args.steps_per_epoch, desc=f"Epoch {epoch}")
+        pbar = tqdm(enumerate(loader), total=min(args.steps_per_epoch, len(loader)), desc=f"Epoch {epoch+1}/{args.epochs}")
         for i, (noisy, clean) in pbar:
             if i >= args.steps_per_epoch:
                 break
@@ -380,7 +402,8 @@ def quick_validate(model, mrstft, device, ds, args, n=8):
     tot = 0.0
     with torch.no_grad():
         for _ in range(n):
-            noisy, clean = ds[random.randint(0, 1000)]
+            idx = random.randint(0, max(0, len(ds) - 1))
+            noisy, clean = ds[idx]
             noisy = noisy.unsqueeze(0).to(device)
             clean = clean.unsqueeze(0).to(device)
             pred = model(noisy)
@@ -388,7 +411,7 @@ def quick_validate(model, mrstft, device, ds, args, n=8):
             clean_flat = clean.squeeze(1)
             loss = mrstft(pred_flat, clean_flat).item() + 0.1 * si_sdr(pred_flat, clean_flat).item()
             tot += loss
-    return tot / n
+    return tot / n if n > 0 else 0.0
 
 
 def export_onnx(model, args, device):
@@ -403,18 +426,18 @@ def export_onnx(model, args, device):
 
 
 # ----------------------------- Inference utility -----------------------------
-
 def enhance_file(model_path, input_wav, out_wav, sr=16000):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ckpt = torch.load(model_path, map_location=device)
-    args = ckpt.get('args', {})
-    model = DemucsHybrid(in_channels=1, base_channels=args.get('base_channels', 48), depth=args.get('depth', 5), transformer_layers=args.get('transformer_layers', 4))
+    cargs = ckpt.get('args', {})
+    model = DemucsHybrid(in_channels=1, base_channels=cargs.get('base_channels', 48),
+                         depth=cargs.get('depth', 5), transformer_layers=cargs.get('transformer_layers', 4))
     model.load_state_dict(ckpt['model'])
     model.to(device).eval()
 
     wav = load_wav(input_wav, sr)
-    orig_len = len(wav)
-    seg_samples = int(args.get('seg_len', 4.0) * sr)
+    orig_len = wav.numel()
+    seg_samples = int(cargs.get('seg_len', 4.0) * sr)
     hop = seg_samples // 2
     enhanced = torch.zeros_like(wav)
     weight = torch.zeros_like(wav)
@@ -422,12 +445,13 @@ def enhance_file(model_path, input_wav, out_wav, sr=16000):
     pos = 0
     while pos < orig_len:
         chunk = wav[pos: pos + seg_samples]
-        if len(chunk) < seg_samples:
-            chunk = F.pad(chunk, (0, seg_samples - len(chunk)))
+        if chunk.numel() < seg_samples:
+            chunk = F.pad(chunk, (0, seg_samples - chunk.numel()))
         with torch.no_grad():
             inp = chunk.unsqueeze(0).unsqueeze(0).to(device)
             out = model(inp).squeeze().cpu()
-        enhanced[pos: pos + seg_samples] += out[:min(len(out), orig_len - pos)]
+        length = min(out.numel(), orig_len - pos)
+        enhanced[pos: pos + length] += out[:length]
         weight[pos: pos + seg_samples] += 1.0
         pos += hop
 
@@ -438,19 +462,18 @@ def enhance_file(model_path, input_wav, out_wav, sr=16000):
 
 
 # ----------------------------- CLI -----------------------------
-
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--clean_dir', type=str, required=True)
-    p.add_argument('--noise_dir', type=str, required=True)
-    p.add_argument('--rir_dir', type=str, default=None)
+    p.add_argument('--clean_dir', type=str, required=True, help=r'E:\Minor-Project-For-Amity-Patna\Audio Data\Noiseless Data')
+    p.add_argument('--noise_dir', type=str, required=True, help=r'E:\Minor-Project-For-Amity-Patna\Audio Data\Noisy Data')
+    p.add_argument('--rir_dir', type=str, default=None, help='Optional RIR wavs folder')
     p.add_argument('--out_dir', type=str, default='./checkpoints')
     p.add_argument('--sr', type=int, default=16000)
     p.add_argument('--seg_len', type=float, default=4.0)
     p.add_argument('--batch', type=int, default=4)
     p.add_argument('--epochs', type=int, default=100)
     p.add_argument('--steps_per_epoch', type=int, default=500)
-    p.add_argument('--workers', type=int, default=4)
+    p.add_argument('--workers', type=int, default=0, help='DataLoader num_workers (0 recommended on Windows)')
     p.add_argument('--lr', type=float, default=3e-4)
     p.add_argument('--weight_decay', type=float, default=1e-6)
     p.add_argument('--lr_step', type=int, default=30)
@@ -462,14 +485,20 @@ def parse_args():
     p.add_argument('--base_channels', type=int, default=48)
     p.add_argument('--depth', type=int, default=5)
     p.add_argument('--transformer_layers', type=int, default=4)
-    p.add_argument('--resume', type=str, default='')
+    p.add_argument('--resume', type=str, default='', help='Path to checkpoint to resume from')
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--min_snr', type=int, default=-5)
     p.add_argument('--max_snr', type=int, default=20)
-    p.add_argument('--workers', type=int, default=4)
     return p.parse_args()
 
 
 if __name__ == '__main__':
     args = parse_args()
+    # simple sanity checks
+    if not os.path.isdir(args.clean_dir):
+        print("ERROR: clean_dir does not exist:", args.clean_dir)
+        sys.exit(1)
+    if not os.path.isdir(args.noise_dir):
+        print("ERROR: noise_dir does not exist:", args.noise_dir)
+        sys.exit(1)
     train(args)
