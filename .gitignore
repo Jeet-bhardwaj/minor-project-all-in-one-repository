@@ -1,0 +1,12 @@
+# Ignore Audio Data folder to prevent pushing to GitHub
+Audio Data/
+Audio Data/
+Audio Data/**
+
+Audio\ Data/
+Audio\ Data/**
+
+# For good measure, also ignore case and possible leading/trailing spaces.
+[Aa]udio [Dd]ata/
+[Aa]udio [Dd]ata/**
+
