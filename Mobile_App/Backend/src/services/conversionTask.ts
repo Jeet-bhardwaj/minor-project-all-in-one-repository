@@ -10,6 +10,7 @@ export class ConversionTaskService {
    * Create a new conversion task
    */
   static async createTask(
+    conversionId: string,
     userId: string,
     inputFileName: string,
     inputFileSize: number,
@@ -22,8 +23,6 @@ export class ConversionTaskService {
     }
   ): Promise<IConversionTask> {
     try {
-      const conversionId = uuidv4();
-
       const task = new ConversionTask({
         conversionId,
         userId,

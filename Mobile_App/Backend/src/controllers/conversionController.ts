@@ -2,15 +2,14 @@ import { Request, Response, NextFunction } from 'express';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import AudioImageConverter, { ConversionOptions } from '../services/converter';
+import { getFastApiClient } from '../services/fastApiClient';
 import KeyManagementService from '../services/keyManagement';
 import ConversionTaskService from '../services/conversionTask';
 import Logger from '../utils/logger';
+import AdmZip from 'adm-zip';
 
-// Initialize converter with Python script path
-const pythonScriptPath = path.join(__dirname, '../../Python_Script/audio_image_chunked.py');
-const uploadsDir = path.join(__dirname, '../../uploads');
-const converter = new AudioImageConverter(pythonScriptPath, uploadsDir);
+// Initialize FastAPI client
+const fastApiClient = getFastApiClient();
 
 export interface ConversionRequest extends Request {
   userId?: string;
@@ -48,6 +47,7 @@ export async function audioToImageController(req: ConversionRequest, res: Respon
 
     // Create conversion task in database
     await ConversionTaskService.createTask(
+      conversionId,
       userId,
       fileName,
       fileSize,
@@ -64,34 +64,68 @@ export async function audioToImageController(req: ConversionRequest, res: Respon
       effectiveMasterKeyHex = await KeyManagementService.getMasterKey();
     }
 
-    // Perform conversion
-    const conversionOptions: ConversionOptions = {
+    // Validate master key format (64 hex characters)
+    if (!effectiveMasterKeyHex || !/^[0-9a-fA-F]{64}$/.test(effectiveMasterKeyHex)) {
+      await ConversionTaskService.updateStatus(conversionId, 'failed', {
+        error: 'Invalid master key format',
+      });
+      res.status(400).json({
+        success: false,
+        error: 'Invalid master key',
+        message: 'Master key must be 64 hexadecimal characters',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Call FastAPI to encode audio to image
+    const result = await fastApiClient.encodeAudioToImage({
+      audioFilePath: inputPath,
       userId,
-      masterKeyHex: effectiveMasterKeyHex,
-      maxChunkBytes: maxChunkBytes ? parseInt(maxChunkBytes) : undefined,
+      masterKey: effectiveMasterKeyHex,
       compress: compress !== false,
-      deleteSource: deleteSource === true
-    };
+      maxChunkBytes: maxChunkBytes ? parseInt(maxChunkBytes) : undefined,
+    });
 
-    const result = await converter.audioToImage(inputPath, conversionOptions);
+    if (result.success && result.zipFilePath) {
+      // Extract the ZIP file to conversions directory
+      const conversionsDir = path.join(__dirname, '../../uploads/conversions');
+      const outputDir = path.join(conversionsDir, `audio-to-image-${conversionId}`);
+      await fs.mkdir(outputDir, { recursive: true });
 
-    if (result.success) {
-      // Get list of generated images
-      const imageFiles = await fs.readdir(result.outputPath!);
-      const pngFiles = imageFiles.filter(f => f.endsWith('.png'));
+      // Extract ZIP
+      const zip = new AdmZip(result.zipFilePath);
+      zip.extractAllTo(outputDir, true);
+
+      // Get list of extracted PNG files
+      const extractedFiles = await fs.readdir(outputDir);
+      const pngFiles = extractedFiles.filter(f => f.endsWith('.png'));
+
+      // Clean up temporary files
+      if (deleteSource) {
+        try {
+          await fs.unlink(inputPath);
+        } catch (error) {
+          Logger.warn('CONVERSION', `Failed to delete source file: ${inputPath}`);
+        }
+      }
+
+      try {
+        await fs.unlink(result.zipFilePath);
+      } catch (error) {
+        Logger.warn('CONVERSION', `Failed to delete temp ZIP: ${result.zipFilePath}`);
+      }
 
       // Update task status to completed
       await ConversionTaskService.updateStatus(conversionId, 'completed', {
-        outputPath: result.outputPath,
+        outputPath: outputDir,
         outputFiles: pngFiles,
-        duration: result.duration,
       });
 
       Logger.info('CONVERSION', `Audio-to-image conversion completed: ${conversionId}`, {
         userId,
         conversionId,
         imageCount: pngFiles.length,
-        duration: result.duration,
       });
 
       res.status(200).json({
@@ -99,10 +133,9 @@ export async function audioToImageController(req: ConversionRequest, res: Respon
         message: 'Audio converted to image successfully',
         conversionId: conversionId,
         inputFile: fileName,
-        outputPath: result.outputPath,
+        outputPath: outputDir,
         imageCount: pngFiles.length,
         images: pngFiles,
-        duration: result.duration,
         timestamp: new Date().toISOString()
       });
     } else {
@@ -119,7 +152,7 @@ export async function audioToImageController(req: ConversionRequest, res: Respon
       res.status(500).json({
         success: false,
         error: result.error || 'Unknown error',
-        message: result.message,
+        message: result.error || 'Conversion failed',
         timestamp: new Date().toISOString()
       });
     }
@@ -135,48 +168,126 @@ export async function audioToImageController(req: ConversionRequest, res: Respon
  */
 export async function imageToAudioController(req: ConversionRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { userId = 'default-user', masterKeyHex, imageDirPath, outputFileName } = req.body;
+    const { userId = 'default-user', masterKeyHex, conversionId: existingConversionId, outputFileName } = req.body;
     const conversionId = uuidv4();
 
     // Validate input
-    if (!imageDirPath || !outputFileName) {
+    if (!existingConversionId || !outputFileName) {
       res.status(400).json({
         error: 'Missing required parameters',
-        message: 'Please provide imageDirPath and outputFileName',
+        message: 'Please provide conversionId (from audio-to-image) and outputFileName',
         timestamp: new Date().toISOString()
       });
       return;
     }
 
-    console.log(`[CONTROLLER] Starting image-to-audio conversion from ${imageDirPath}`);
-
-    // Perform conversion
-    const conversionOptions: ConversionOptions = {
+    Logger.info('CONVERSION', `Starting image-to-audio conversion from: ${existingConversionId}`, {
       userId,
-      masterKeyHex
-    };
+      conversionId,
+    });
 
-    const result = await converter.imageToAudio(imageDirPath, outputFileName, conversionOptions);
+    // Get master key from database or environment
+    let effectiveMasterKeyHex = masterKeyHex;
+    if (!effectiveMasterKeyHex) {
+      effectiveMasterKeyHex = await KeyManagementService.getMasterKey();
+    }
 
-    if (result.success) {
+    // Validate master key format
+    if (!effectiveMasterKeyHex || !/^[0-9a-fA-F]{64}$/.test(effectiveMasterKeyHex)) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid master key',
+        message: 'Master key must be 64 hexadecimal characters',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Find the conversion directory
+    const conversionsDir = path.join(__dirname, '../../uploads/conversions');
+    const imageDirPath = path.join(conversionsDir, `audio-to-image-${existingConversionId}`);
+
+    // Verify directory exists
+    try {
+      await fs.access(imageDirPath);
+    } catch {
+      res.status(404).json({
+        error: 'Conversion not found',
+        message: `No conversion found with ID: ${existingConversionId}`,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Create a ZIP file from the images directory
+    const tempZipPath = path.join(__dirname, '../../uploads/temp', `temp_${Date.now()}.zip`);
+    const zip = new AdmZip();
+    
+    // Add all files from the conversion directory
+    const files = await fs.readdir(imageDirPath);
+    for (const file of files) {
+      const filePath = path.join(imageDirPath, file);
+      zip.addLocalFile(filePath);
+    }
+    
+    // Write the ZIP file
+    zip.writeZip(tempZipPath);
+
+    Logger.debug('CONVERSION', `Created temporary ZIP for decoding: ${tempZipPath}`);
+
+    // Call FastAPI to decode image to audio
+    const result = await fastApiClient.decodeImageToAudio({
+      encryptedZipPath: tempZipPath,
+      userId,
+      masterKey: effectiveMasterKeyHex,
+      outputFilename: outputFileName,
+    });
+
+    // Clean up temporary ZIP
+    try {
+      await fs.unlink(tempZipPath);
+    } catch (error) {
+      Logger.warn('CONVERSION', `Failed to delete temp ZIP: ${tempZipPath}`);
+    }
+
+    if (result.success && result.audioFilePath) {
+      // Move the audio file to conversions directory
+      const outputDir = path.join(conversionsDir, `image-to-audio-${conversionId}`);
+      await fs.mkdir(outputDir, { recursive: true });
+      
+      const finalAudioPath = path.join(outputDir, outputFileName);
+      await fs.rename(result.audioFilePath, finalAudioPath);
+
+      Logger.info('CONVERSION', `Image-to-audio conversion completed: ${conversionId}`, {
+        userId,
+        conversionId,
+        outputFile: outputFileName,
+      });
+
       res.status(200).json({
         success: true,
         message: 'Image converted to audio successfully',
         conversionId: conversionId,
         outputFile: outputFileName,
-        outputPath: result.outputPath,
-        duration: result.duration,
+        outputPath: finalAudioPath,
         timestamp: new Date().toISOString()
       });
     } else {
+      Logger.error('CONVERSION', `Image-to-audio conversion failed: ${result.error}`, {
+        userId,
+        conversionId,
+      });
+
       res.status(500).json({
         success: false,
         error: result.error || 'Unknown error',
-        message: result.message,
+        message: result.error || 'Conversion failed',
         timestamp: new Date().toISOString()
       });
     }
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    Logger.error('CONVERSION', `Image-to-audio controller error: ${errorMsg}`, { userId: req.body?.userId });
     next(error);
   }
 }
@@ -197,13 +308,35 @@ export async function getConversionStatusController(req: ConversionRequest, res:
       return;
     }
 
-    const results = await converter.getConversionResults(conversionId);
+    // Look for the conversion in both audio-to-image and image-to-audio directories
+    const conversionsDir = path.join(__dirname, '../../uploads/conversions');
+    const possiblePaths = [
+      path.join(conversionsDir, `audio-to-image-${conversionId}`),
+      path.join(conversionsDir, `image-to-audio-${conversionId}`)
+    ];
 
-    if (results) {
+    let foundPath: string | null = null;
+    let files: string[] = [];
+
+    for (const possiblePath of possiblePaths) {
+      try {
+        await fs.access(possiblePath);
+        foundPath = possiblePath;
+        files = await fs.readdir(possiblePath);
+        break;
+      } catch {
+        // Continue checking
+      }
+    }
+
+    if (foundPath) {
       res.status(200).json({
         success: true,
         conversionId: conversionId,
-        results: results,
+        results: {
+          path: foundPath,
+          files: files,
+        },
         timestamp: new Date().toISOString()
       });
     } else {
