@@ -17,6 +17,7 @@
     }
   ],
   "env": {
+    "VERCEL": "1",
     "PYTHONPATH": "/var/task"
   }
 }

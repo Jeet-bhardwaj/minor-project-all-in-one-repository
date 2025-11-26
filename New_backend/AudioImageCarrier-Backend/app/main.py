@@ -56,15 +56,19 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Create required directories on application startup."""
-    upload_path = Path(settings.upload_dir)
-    temp_path = Path(settings.temp_dir)
-    
-    upload_path.mkdir(parents=True, exist_ok=True)
-    temp_path.mkdir(parents=True, exist_ok=True)
-    
-    print(f"✅ {settings.app_name} v{settings.app_version} started")
-    print(f"📁 Upload directory: {settings.upload_dir}")
-    print(f"📁 Temp directory: {settings.temp_dir}")
+    try:
+        upload_path = Path(settings.upload_dir)
+        temp_path = Path(settings.temp_dir)
+        
+        upload_path.mkdir(parents=True, exist_ok=True)
+        temp_path.mkdir(parents=True, exist_ok=True)
+        
+        print(f"✅ {settings.app_name} v{settings.app_version} started")
+        print(f"📁 Upload directory: {settings.upload_dir}")
+        print(f"📁 Temp directory: {settings.temp_dir}")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not create directories: {e}")
+        # Continue anyway - directories might already exist or be read-only
 
 # Include routers
 app.include_router(encode.router, prefix="/api/v1", tags=["Encode"])

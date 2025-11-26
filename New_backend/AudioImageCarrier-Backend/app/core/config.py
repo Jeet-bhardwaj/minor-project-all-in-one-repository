@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     api_key: str = Field(default="dev-test-key-12345")
     
     # File Storage
-    upload_dir: str = Field(default="storage/uploads")
-    temp_dir: str = Field(default="storage/temp")
+    upload_dir: str = Field(default=os.environ.get("UPLOAD_DIR", "/tmp/uploads" if os.environ.get("VERCEL") else "storage/uploads"))
+    temp_dir: str = Field(default=os.environ.get("TEMP_DIR", "/tmp" if os.environ.get("VERCEL") else "storage/temp"))
     max_upload_size_mb: int = Field(default=500)
     
     # Audio Processing
