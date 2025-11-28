@@ -1,12 +1,26 @@
-import { Tabs } from 'expo-router';
-import React from 'react';
+import { Tabs, useRouter } from 'expo-router';
+import React, { useEffect } from 'react';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const { isSignedIn, isLoading } = useAuth();
+  const router = useRouter();
+
+  // Redirect to welcome if not signed in
+  useEffect(() => {
+    if (!isLoading && !isSignedIn) {
+      router.replace('/auth/welcome');
+    }
+  }, [isSignedIn, isLoading]);
+
+  if (isLoading || !isSignedIn) {
+    return null;
+  }
 
   return (
     <Tabs
@@ -26,6 +40,13 @@ export default function TabLayout() {
         options={{
           title: 'Image→Audio',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="photo.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="downloads"
+        options={{
+          title: 'Downloads',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="arrow.down.circle.fill" color={color} />,
         }}
       />
       <Tabs.Screen

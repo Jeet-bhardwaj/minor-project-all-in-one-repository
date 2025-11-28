@@ -400,11 +400,27 @@ export async function downloadConversionController(req: ConversionRequest, res: 
       return;
     }
 
-    const filePath = path.join(__dirname, '../../../uploads/conversions', conversionId, fileName);
+    // Support both audio-to-image-{id} and image-to-audio-{id} formats
+    let filePath = path.join(__dirname, '../../uploads/conversions', `audio-to-image-${conversionId}`, fileName);
+    
+    // Check if file exists in audio-to-image directory
+    try {
+      await fs.access(filePath);
+    } catch {
+      // Try image-to-audio directory
+      filePath = path.join(__dirname, '../../uploads/conversions', `image-to-audio-${conversionId}`, fileName);
+      try {
+        await fs.access(filePath);
+      } catch {
+        // Try without prefix (legacy)
+        filePath = path.join(__dirname, '../../uploads/conversions', conversionId, fileName);
+      }
+    }
+    
     const normalizedPath = path.normalize(filePath);
 
     // Security check: ensure file is within conversions directory
-    const conversionsDir = path.normalize(path.join(__dirname, '../../../uploads/conversions'));
+    const conversionsDir = path.normalize(path.join(__dirname, '../../uploads/conversions'));
     if (!normalizedPath.startsWith(conversionsDir)) {
       res.status(403).json({
         error: 'Access denied',
@@ -414,10 +430,14 @@ export async function downloadConversionController(req: ConversionRequest, res: 
       return;
     }
 
+    // File access already checked above, now send it
     try {
       await fs.access(normalizedPath);
+      
+      Logger.info('DOWNLOAD', `Serving file: ${fileName} from ${normalizedPath}`);
       res.download(normalizedPath, fileName);
-    } catch {
+    } catch (error) {
+      Logger.error('DOWNLOAD', `File not found: ${fileName} in conversion ${conversionId}`);
       res.status(404).json({
         error: 'File not found',
         message: `File not found: ${fileName}`,
@@ -429,10 +449,107 @@ export async function downloadConversionController(req: ConversionRequest, res: 
   }
 }
 
+/**
+ * Download Conversion as ZIP Controller
+ */
+export async function downloadConversionZipController(req: ConversionRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { conversionId } = req.params;
+
+    if (!conversionId) {
+      res.status(400).json({
+        error: 'Missing conversionId',
+        message: 'Please provide conversionId',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Find the conversion directory
+    let conversionDir = path.join(__dirname, '../../uploads/conversions', `audio-to-image-${conversionId}`);
+    
+    // Check if directory exists
+    try {
+      await fs.access(conversionDir);
+    } catch {
+      // Try image-to-audio directory
+      conversionDir = path.join(__dirname, '../../uploads/conversions', `image-to-audio-${conversionId}`);
+      try {
+        await fs.access(conversionDir);
+      } catch {
+        // Try without prefix (legacy)
+        conversionDir = path.join(__dirname, '../../uploads/conversions', conversionId);
+      }
+    }
+
+    const normalizedPath = path.normalize(conversionDir);
+    const conversionsDir = path.normalize(path.join(__dirname, '../../uploads/conversions'));
+    
+    // Security check
+    if (!normalizedPath.startsWith(conversionsDir)) {
+      res.status(403).json({
+        error: 'Access denied',
+        message: 'Directory access denied',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Check if directory exists
+    try {
+      const stats = await fs.stat(normalizedPath);
+      if (!stats.isDirectory()) {
+        throw new Error('Not a directory');
+      }
+    } catch (error) {
+      Logger.error('DOWNLOAD', `Conversion directory not found: ${conversionId}`);
+      res.status(404).json({
+        error: 'Conversion not found',
+        message: `Conversion ${conversionId} not found`,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Create ZIP file
+    Logger.info('DOWNLOAD', `Creating ZIP for conversion: ${conversionId}`);
+    const zip = new AdmZip();
+    
+    // Read all files in the directory
+    const files = await fs.readdir(normalizedPath);
+    
+    for (const file of files) {
+      const filePath = path.join(normalizedPath, file);
+      const stats = await fs.stat(filePath);
+      
+      if (stats.isFile()) {
+        zip.addLocalFile(filePath);
+      }
+    }
+
+    // Generate ZIP buffer
+    const zipBuffer = zip.toBuffer();
+    const zipFileName = `encrypted_${conversionId}.zip`;
+
+    Logger.info('DOWNLOAD', `Serving ZIP: ${zipFileName} (${zipBuffer.length} bytes)`);
+
+    // Send ZIP file
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFileName}"`);
+    res.setHeader('Content-Length', zipBuffer.length);
+    res.send(zipBuffer);
+
+  } catch (error) {
+    Logger.error('DOWNLOAD', `ZIP download error: ${error instanceof Error ? error.message : String(error)}`);
+    next(error);
+  }
+}
+
 export default {
   audioToImageController,
   imageToAudioController,
   getConversionStatusController,
   listConversionsController,
-  downloadConversionController
+  downloadConversionController,
+  downloadConversionZipController
 };

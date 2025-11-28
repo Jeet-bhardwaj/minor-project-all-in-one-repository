@@ -94,7 +94,7 @@ export class FastApiClient {
 
       // Create form data
       const formData = new FormData();
-      formData.append('audio_file', createReadStream(request.audioFilePath));
+      formData.append('file', createReadStream(request.audioFilePath));
       formData.append('user_id', request.userId);
       formData.append('master_key', request.masterKey);
 

@@ -4,12 +4,13 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNavigation, useRouter } from 'expo-router';
+import { authApi } from '@/services/api';
 
 export default function LoginScreen() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const colors = Colors[isDark ? 'dark' : 'light'];
-  const { signInWithGoogle, isSignedIn } = useAuth();
+  const { login, isSignedIn } = useAuth();
   const navigation = useNavigation();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -76,21 +77,11 @@ export default function LoginScreen() {
 
     try {
       setLoading(true);
-      // Mock login - replace with actual API call
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Simulate successful login
-      const mockGoogleData = {
-        id: Math.random().toString(),
-        email: email,
-        name: email.split('@')[0],
-        picture: 'https://via.placeholder.com/200',
-      };
-      
-      await signInWithGoogle(mockGoogleData);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to login. Please try again.');
-      console.error(error);
+      await login(email, password);
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to login. Please try again.';
+      Alert.alert('Login Failed', errorMessage);
+      console.error('Login error:', error);
     } finally {
       setLoading(false);
     }

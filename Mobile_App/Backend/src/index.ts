@@ -3,13 +3,14 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 import conversionRoutes from './routes/conversionRoutes';
+import authRoutes from './routes/authRoutes';
 import { connectDB, isDBConnected } from './config/database';
 import Logger from './utils/logger';
 
 dotenv.config();
 
 const app: Express = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Initialize database connection
 (async () => {
@@ -23,14 +24,44 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-  credentials: process.env.CORS_CREDENTIALS === 'true',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'localhost',
+      '127.0.0.1',
+      '192.168.29.67', // Your local machine IP
+      /^192\.168\.\d+\.\d+$/, // Allow any 192.168.x.x IP
+      /^10\.\d+\.\d+\.\d+$/, // Allow any 10.x.x.x IP
+      'http://localhost',
+      'http://127.0.0.1',
+      process.env.ALLOWED_ORIGINS
+    ];
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') {
+        return origin.includes(allowed);
+      } else if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return false;
+    });
+    
+    callback(null, isAllowed);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  exposedHeaders: ['X-Total-Count', 'X-Page-Number'],
+  maxAge: 3600
 }));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Authentication routes
+app.use('/api', authRoutes);
 
 // Conversion API routes
 app.use('/api', conversionRoutes);
@@ -88,10 +119,11 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server - listen on all network interfaces (0.0.0.0) to allow phone connections
+app.listen(PORT, '0.0.0.0', () => {
   Logger.info('STARTUP', `🚀 EchoCipher Backend running on port ${PORT}`);
   Logger.info('STARTUP', `📝 Health check: http://localhost:${PORT}/health`);
+  Logger.info('STARTUP', `📱 Mobile access: http://<your-machine-ip>:${PORT}/health`);
   Logger.info('STARTUP', `🔧 API Status: http://localhost:${PORT}/api/status`);
   Logger.info('STARTUP', `🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   Logger.info('STARTUP', `🗄️  Database: ${isDBConnected() ? 'Connected' : 'Connecting...'}`);

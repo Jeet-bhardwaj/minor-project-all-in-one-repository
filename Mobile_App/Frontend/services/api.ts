@@ -171,17 +171,34 @@ export const conversionApi = {
     
     // Handle both file objects and URIs
     if (audioFile?.uri) {
-      const response = await fetch(audioFile.uri);
-      const blob = await response.blob();
-      formData.append('audioFile', blob, audioFile.name || 'audio.mp3');
+      // Mobile: Use URI-based file upload
+      const fileExtension = audioFile.name?.split('.').pop()?.toLowerCase() || 'mp3';
+      const mimeTypes: Record<string, string> = {
+        'mp3': 'audio/mpeg',
+        'wav': 'audio/wav',
+        'm4a': 'audio/mp4',
+        'flac': 'audio/flac',
+        'ogg': 'audio/ogg',
+        'aac': 'audio/aac',
+      };
+      
+      const mimeType = audioFile.mimeType || mimeTypes[fileExtension] || 'audio/mpeg';
+      
+      formData.append('audioFile', {
+        uri: audioFile.uri,
+        type: mimeType,
+        name: audioFile.name || `audio.${fileExtension}`,
+      } as any);
     } else if (audioFile instanceof File || audioFile instanceof Blob) {
-      formData.append('audioFile', audioFile);
+      // Web: Use File/Blob directly
+      const fileName = (audioFile as File).name || 'audio.mp3';
+      formData.append('audioFile', audioFile, fileName);
     } else {
-      throw new Error('Invalid audio file');
+      throw new Error('Invalid audio file format');
     }
     
     if (userId) formData.append('userId', userId);
-    if (options?.compress) formData.append('compress', 'true');
+    if (options?.compress !== undefined) formData.append('compress', String(options.compress));
     if (options?.deleteSource) formData.append('deleteSource', 'true');
     if (options?.masterKeyHex) formData.append('masterKeyHex', options.masterKeyHex);
 

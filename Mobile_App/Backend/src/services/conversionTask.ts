@@ -1,6 +1,5 @@
 import { ConversionTask, IConversionTask } from '../models';
 import Logger from '../utils/logger';
-import { v4 as uuidv4 } from 'uuid';
 
 /**
  * Conversion Task Management Service

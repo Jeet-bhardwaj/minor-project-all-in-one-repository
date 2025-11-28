@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { authApi } from '@/services/api';
 
 interface User {
   id: string;
@@ -12,6 +13,8 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isSignedIn: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string) => Promise<void>;
   signInWithGoogle: (googleData: any) => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -40,25 +43,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     bootstrapAsync();
   }, []);
 
+  const login = async (email: string, password: string) => {
+    try {
+      const response = await authApi.login(email, password);
+      await AsyncStorage.setItem('authToken', response.token);
+      await AsyncStorage.setItem('user', JSON.stringify(response.user));
+      setUser(response.user);
+    } catch (error) {
+      console.error('Error logging in:', error);
+      throw error;
+    }
+  };
+
+  const register = async (name: string, email: string, password: string) => {
+    try {
+      const response = await authApi.register(name, email, password);
+      await AsyncStorage.setItem('authToken', response.token);
+      await AsyncStorage.setItem('user', JSON.stringify(response.user));
+      setUser(response.user);
+    } catch (error) {
+      console.error('Error registering:', error);
+      throw error;
+    }
+  };
+
   const signInWithGoogle = async (googleData: any) => {
     try {
-      const userData: User = {
-        id: googleData.sub || googleData.id,
-        email: googleData.email,
-        name: googleData.name,
-        profilePicture: googleData.picture,
-      };
-
-      await AsyncStorage.setItem('user', JSON.stringify(userData));
-      setUser(userData);
+      const response = await authApi.googleAuth(googleData);
+      await AsyncStorage.setItem('authToken', response.token);
+      await AsyncStorage.setItem('user', JSON.stringify(response.user));
+      setUser(response.user);
     } catch (error) {
-      console.error('Error signing in:', error);
+      console.error('Error signing in with Google:', error);
       throw error;
     }
   };
 
   const signOut = async () => {
     try {
+      await AsyncStorage.removeItem('authToken');
       await AsyncStorage.removeItem('user');
       setUser(null);
     } catch (error) {
@@ -71,6 +94,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     user,
     isLoading,
     isSignedIn: !!user,
+    login,
+    register,
     signInWithGoogle,
     signOut,
   };

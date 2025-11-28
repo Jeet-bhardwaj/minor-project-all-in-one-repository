@@ -7,7 +7,8 @@ import {
   imageToAudioController,
   getConversionStatusController,
   listConversionsController,
-  downloadConversionController
+  downloadConversionController,
+  downloadConversionZipController
 } from '../controllers/conversionController';
 
 const router = Router();
@@ -155,6 +156,16 @@ router.get(
 router.get(
   '/conversions/:conversionId',
   getConversionStatusController
+);
+
+/**
+ * GET /api/conversions/:conversionId/download-zip
+ * Download all files from a conversion as a ZIP archive
+ * IMPORTANT: This must come BEFORE the /:fileName route
+ */
+router.get(
+  '/conversions/:conversionId/download-zip',
+  downloadConversionZipController
 );
 
 /**

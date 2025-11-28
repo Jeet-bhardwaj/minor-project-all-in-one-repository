@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,10 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useNavigation } from 'expo-router';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface FormData {
   fullName: string;
@@ -24,9 +25,11 @@ interface FormData {
 
 export default function RegisterScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const colors = Colors[isDark ? 'dark' : 'light'];
+  const { register, isSignedIn } = useAuth();
 
   const [formData, setFormData] = useState<FormData>({
     fullName: '',
@@ -39,6 +42,16 @@ export default function RegisterScreen() {
   const [errors, setErrors] = useState<Partial<FormData>>({});
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+
+  // Navigate to tabs when user signs in
+  useEffect(() => {
+    if (isSignedIn) {
+      (navigation as any).reset({
+        index: 0,
+        routes: [{ name: '(tabs)' }],
+      });
+    }
+  }, [isSignedIn]);
 
   const validateForm = () => {
     const newErrors: Partial<FormData> = {};
@@ -74,9 +87,8 @@ export default function RegisterScreen() {
 
     try {
       setLoading(true);
-      // Mock registration - replace with actual API call
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
+      await register(formData.fullName, formData.email, formData.password);
+      
       Alert.alert(
         'Success',
         'Account created successfully!',
@@ -84,14 +96,15 @@ export default function RegisterScreen() {
           {
             text: 'OK',
             onPress: () => {
-              router.push('/auth/login');
+              // Navigation will be handled automatically by AuthContext state change
             },
           },
         ]
       );
-    } catch (error) {
-      Alert.alert('Error', 'Failed to create account. Please try again.');
-      console.error(error);
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to create account. Please try again.';
+      Alert.alert('Registration Failed', errorMessage);
+      console.error('Registration error:', error);
     } finally {
       setLoading(false);
     }
