@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -7,19 +7,15 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  Modal,
+  TextInput,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
-import { conversionApi } from '@/services/api';
-
-interface ConversionOptions {
-  quality: 'low' | 'medium' | 'high';
-  sampleRate: '16000' | '44100' | '48000';
-  format: 'mp3' | 'wav' | 'aac';
-}
+import { audioImageApi } from '@/services/api';
 
 export default function ImageToAudioScreen() {
   const colorScheme = useColorScheme();
@@ -30,26 +26,39 @@ export default function ImageToAudioScreen() {
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [converting, setConverting] = useState(false);
   const [outputFile, setOutputFile] = useState<any>(null);
-  const [showOptions, setShowOptions] = useState(false);
-  const [options, setOptions] = useState<ConversionOptions>({
-    quality: 'high',
-    sampleRate: '44100',
-    format: 'mp3',
-  });
+  const [userId, setUserId] = useState('');
+  const [masterKey, setMasterKey] = useState('');
+
+  // Load saved credentials from AsyncStorage
+  useEffect(() => {
+    loadSavedCredentials();
+  }, []);
+
+  const loadSavedCredentials = async () => {
+    try {
+      const savedUserId = await AsyncStorage.getItem('lastUsedUserId');
+      const savedMasterKey = await AsyncStorage.getItem('lastUsedMasterKey');
+      
+      if (savedUserId) setUserId(savedUserId);
+      if (savedMasterKey) setMasterKey(savedMasterKey);
+    } catch (error) {
+      console.error('Failed to load saved credentials:', error);
+    }
+  };
 
   const handleSelectImage = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'image/*',
+        type: 'application/zip',
         copyToCacheDirectory: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const file = result.assets[0];
         
-        // Validate file size (max 100MB)
-        if (file.size && file.size > 100 * 1024 * 1024) {
-          Alert.alert('Error', 'Image file is too large. Maximum size is 100MB');
+        // Validate file size (max 500MB as per API)
+        if (file.size && file.size > 500 * 1024 * 1024) {
+          Alert.alert('Error', 'ZIP file is too large. Maximum size is 500MB');
           return;
         }
 
@@ -61,50 +70,108 @@ export default function ImageToAudioScreen() {
         // User cancelled file picker
         return;
       }
-      Alert.alert('Error', 'Failed to pick image file. Please try again.');
+      Alert.alert('Error', 'Failed to pick ZIP file. Please try again.');
       console.error('File picker error:', error);
     }
   };
 
   const handleConvert = async () => {
     if (!selectedFile) {
-      Alert.alert('Error', 'Please select an image file first');
+      Alert.alert('Error', 'Please select a ZIP file first');
+      return;
+    }
+
+    // Validate User ID
+    if (!userId || userId.trim().length === 0) {
+      Alert.alert('Error', 'Please enter a User ID');
+      return;
+    }
+
+    // Validate Master Key (must be 64 hex characters)
+    if (!masterKey || !/^[0-9a-fA-F]{64}$/.test(masterKey)) {
+      Alert.alert(
+        'Error',
+        'Master Key must be exactly 64 hexadecimal characters.\n\nExample:\na7f3e9d2c1b4568790fedcba0123456789abcdef0123456789abcdef01234567'
+      );
       return;
     }
 
     try {
       setConverting(true);
 
-      const response = await conversionApi.imageToAudio(selectedFile.uri, options);
+      // Call Vercel API to decode image to audio
+      const audioBlob = await audioImageApi.decodeImageToAudio(
+        selectedFile.uri,
+        userId.trim(),
+        masterKey.trim()
+      );
 
-      if (response.success && response.outputFile) {
-        setOutputFile(response.outputFile);
-        Alert.alert('Success', 'Image converted to audio successfully!');
-      } else {
-        Alert.alert('Error', 'Conversion failed. Please try again.');
-      }
+      // Save the audio file to local storage
+      const outputFilename = 'decoded_audio_' + Date.now() + '.mp3';
+      const outputPath = `${FileSystem.documentDirectory}${outputFilename}`;
+      
+      // Convert blob to base64 and save
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64data = reader.result as string;
+        const base64 = base64data.split(',')[1]; // Remove data:audio/mpeg;base64, prefix
+        
+        await FileSystem.writeAsStringAsync(outputPath, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        const fileInfo = await FileSystem.getInfoAsync(outputPath);
+        
+        setOutputFile({
+          path: outputPath,
+          filename: outputFilename,
+          size: (fileInfo as any).size || 0,
+        });
+
+        Alert.alert('Success', 'Audio decoded successfully!');
+      };
+      reader.readAsDataURL(audioBlob);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Conversion failed');
-      console.error(error);
+      console.error('Decode error:', error);
+      let errorMessage = 'Decoding failed. ';
+      
+      if (error.response?.status === 400) {
+        errorMessage += 'Please verify your User ID and Master Key match the ones used during encoding.';
+      } else if (error.response?.status === 401) {
+        errorMessage += 'API authentication failed.';
+      } else if (error.message) {
+        errorMessage += error.message;
+      } else {
+        errorMessage += 'Please try again.';
+      }
+      
+      Alert.alert('Error', errorMessage);
     } finally {
       setConverting(false);
     }
   };
 
-  const handleDownload = () => {
-    if (outputFile?.url) {
-      Alert.alert('Success', 'Audio file is ready for download');
+  const handleDownload = async () => {
+    if (outputFile?.path) {
+      try {
+        // Share the audio file
+        const { Sharing } = await import('expo-sharing');
+        const isAvailable = await Sharing.isAvailableAsync();
+        
+        if (isAvailable) {
+          await Sharing.shareAsync(outputFile.path);
+        } else {
+          Alert.alert('Success', `Audio file saved at: ${outputFile.path}`);
+        }
+      } catch (error) {
+        Alert.alert('Error', 'Failed to share audio file');
+      }
     }
   };
 
   const handleNewConversion = () => {
     setSelectedFile(null);
     setOutputFile(null);
-    setOptions({
-      quality: 'high',
-      sampleRate: '44100',
-      format: 'mp3',
-    });
   };
 
   return (
@@ -123,7 +190,7 @@ export default function ImageToAudioScreen() {
       <View style={[styles.infoBox, { backgroundColor: colors.tint + '15', borderColor: colors.tint + '30' }]}>
         <Text style={styles.infoIcon}>🖼️➜🎵</Text>
         <Text style={[styles.infoText, { color: colors.text }]}>
-          Convert images into audio files based on visual data
+          Decode encrypted PNG images back to original audio. Upload the ZIP file from "Audio to Image" conversion.
         </Text>
       </View>
 
@@ -133,9 +200,9 @@ export default function ImageToAudioScreen() {
             style={[styles.uploadBox, { borderColor: colors.tint, backgroundColor: colors.tint + '08' }]}
             onPress={handleSelectImage}
           >
-            <Text style={styles.uploadIcon}>🖼️</Text>
+            <Text style={styles.uploadIcon}>📦</Text>
             <Text style={[styles.uploadText, { color: colors.text }]}>
-              {selectedFile ? 'Image Selected ✓' : 'Tap to select image file'}
+              {selectedFile ? 'ZIP File Selected ✓' : 'Tap to select encrypted ZIP file'}
             </Text>
             {selectedFile && (
               <Text style={[styles.fileName, { color: colors.icon }]}>
@@ -146,20 +213,41 @@ export default function ImageToAudioScreen() {
 
           {selectedFile && (
             <>
-              <TouchableOpacity
-                style={[styles.optionsButton, { backgroundColor: colors.tint + '15', borderColor: colors.tint + '30' }]}
-                onPress={() => setShowOptions(true)}
-              >
-                <Text style={[styles.optionsButtonText, { color: colors.text }]}>⚙️ Audio Settings</Text>
-              </TouchableOpacity>
+              {/* User ID Input */}
+              <View style={[styles.inputContainer, { backgroundColor: colors.tint + '08', borderColor: colors.tint + '20' }]}>
+                <Text style={[styles.inputLabel, { color: colors.text }]}>User ID</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.text, borderColor: colors.tint + '30' }]}
+                  value={userId}
+                  onChangeText={setUserId}
+                  placeholder="Enter User ID (same as encoding)"
+                  placeholderTextColor={colors.icon + '80'}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={[styles.inputHint, { color: colors.icon }]}>
+                  Must match the User ID used during encoding
+                </Text>
+              </View>
 
-              <OptionsModal
-                visible={showOptions}
-                onClose={() => setShowOptions(false)}
-                options={options}
-                onOptionsChange={setOptions}
-                colors={colors}
-              />
+              {/* Master Key Input */}
+              <View style={[styles.inputContainer, { backgroundColor: colors.tint + '08', borderColor: colors.tint + '20' }]}>
+                <Text style={[styles.inputLabel, { color: colors.text }]}>Master Key</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.text, borderColor: colors.tint + '30' }]}
+                  value={masterKey}
+                  onChangeText={setMasterKey}
+                  placeholder="Enter 64-character hex master key"
+                  placeholderTextColor={colors.icon + '80'}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={false}
+                  multiline
+                />
+                <Text style={[styles.inputHint, { color: colors.icon }]}>
+                  Must match the Master Key used during encoding (64 hex characters)
+                </Text>
+              </View>
             </>
           )}
 
@@ -167,20 +255,20 @@ export default function ImageToAudioScreen() {
             style={[
               styles.convertButton,
               {
-                backgroundColor: selectedFile ? colors.tint : colors.icon + '50',
+                backgroundColor: selectedFile && userId && masterKey ? colors.tint : colors.icon + '50',
                 opacity: converting ? 0.7 : 1,
               },
             ]}
             onPress={handleConvert}
-            disabled={!selectedFile || converting}
+            disabled={!selectedFile || !userId || !masterKey || converting}
           >
             {converting ? (
               <ActivityIndicator color="#fff" size="large" />
             ) : (
               <>
-                <Text style={styles.convertIcon}>✨</Text>
+                <Text style={styles.convertIcon}>🔓</Text>
                 <Text style={styles.convertButtonText}>
-                  {selectedFile ? 'Convert to Audio' : 'Select File First'}
+                  {selectedFile && userId && masterKey ? 'Decode to Audio' : 'Fill All Fields'}
                 </Text>
               </>
             )}
@@ -188,10 +276,10 @@ export default function ImageToAudioScreen() {
 
           <View style={[styles.tipsBox, { backgroundColor: colors.tint + '08', borderColor: colors.tint + '20' }]}>
             <Text style={[styles.tipsTitle, { color: colors.text }]}>💡 Tips</Text>
-            <Text style={[styles.tipItem, { color: colors.icon }]}>• Supports JPG, PNG, GIF formats</Text>
-            <Text style={[styles.tipItem, { color: colors.icon }]}>• Higher sample rate = better quality</Text>
-            <Text style={[styles.tipItem, { color: colors.icon }]}>• Image colors map to audio frequencies</Text>
-            <Text style={[styles.tipItem, { color: colors.icon }]}>• Best results with detailed images</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Upload the ZIP file from "Audio to Image" tab</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Use the same User ID and Master Key</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Decryption requires matching credentials</Text>
+            <Text style={[styles.tipItem, { color: colors.icon }]}>• Output will be the original audio file</Text>
           </View>
         </>
       ) : (
@@ -227,125 +315,6 @@ export default function ImageToAudioScreen() {
   );
 }
 
-interface OptionsModalProps {
-  visible: boolean;
-  onClose: () => void;
-  options: ConversionOptions;
-  onOptionsChange: (options: ConversionOptions) => void;
-  colors: any;
-}
-
-const OptionsModal: React.FC<OptionsModalProps> = ({
-  visible,
-  onClose,
-  options,
-  onOptionsChange,
-  colors,
-}) => {
-  return (
-    <Modal visible={visible} animationType="slide" transparent>
-      <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
-        <View style={styles.modalHeader}>
-          <Text style={[styles.modalTitle, { color: colors.text }]}>Audio Settings</Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={[styles.closeButton, { color: colors.tint }]}>✕</Text>
-          </TouchableOpacity>
-        </View>
-
-        <ScrollView style={styles.modalContent}>
-          <View style={styles.optionSection}>
-            <Text style={[styles.optionLabel, { color: colors.text }]}>Quality</Text>
-            <View style={styles.buttonGroup}>
-              {(['low', 'medium', 'high'] as const).map((qual) => (
-                <TouchableOpacity
-                  key={qual}
-                  style={[
-                    styles.optionButton,
-                    {
-                      backgroundColor: options.quality === qual ? colors.tint : colors.tint + '15',
-                    },
-                  ]}
-                  onPress={() => onOptionsChange({ ...options, quality: qual })}
-                >
-                  <Text
-                    style={[
-                      styles.optionButtonText,
-                      { color: options.quality === qual ? '#fff' : colors.text },
-                    ]}
-                  >
-                    {qual.toUpperCase()}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.optionSection}>
-            <Text style={[styles.optionLabel, { color: colors.text }]}>Sample Rate</Text>
-            <View style={styles.buttonGroup}>
-              {(['16000', '44100', '48000'] as const).map((rate) => (
-                <TouchableOpacity
-                  key={rate}
-                  style={[
-                    styles.optionButton,
-                    {
-                      backgroundColor: options.sampleRate === rate ? colors.tint : colors.tint + '15',
-                    },
-                  ]}
-                  onPress={() => onOptionsChange({ ...options, sampleRate: rate })}
-                >
-                  <Text
-                    style={[
-                      styles.optionButtonText,
-                      { color: options.sampleRate === rate ? '#fff' : colors.text },
-                    ]}
-                  >
-                    {rate}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.optionSection}>
-            <Text style={[styles.optionLabel, { color: colors.text }]}>Format</Text>
-            <View style={styles.buttonGroup}>
-              {(['mp3', 'wav', 'aac'] as const).map((fmt) => (
-                <TouchableOpacity
-                  key={fmt}
-                  style={[
-                    styles.optionButton,
-                    {
-                      backgroundColor: options.format === fmt ? colors.tint : colors.tint + '15',
-                    },
-                  ]}
-                  onPress={() => onOptionsChange({ ...options, format: fmt })}
-                >
-                  <Text
-                    style={[
-                      styles.optionButtonText,
-                      { color: options.format === fmt ? '#fff' : colors.text },
-                    ]}
-                  >
-                    {fmt.toUpperCase()}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        </ScrollView>
-
-        <TouchableOpacity
-          style={[styles.applyButton, { backgroundColor: colors.tint }]}
-          onPress={onClose}
-        >
-          <Text style={styles.applyButtonText}>Apply Settings</Text>
-        </TouchableOpacity>
-      </View>
-    </Modal>
-  );
-};
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
   contentContainer: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 30 },
@@ -360,8 +329,10 @@ const styles = StyleSheet.create({
   uploadIcon: { fontSize: 48, marginBottom: 12 },
   uploadText: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
   fileName: { fontSize: 12, marginTop: 8 },
-  optionsButton: { borderRadius: 10, padding: 14, marginBottom: 16, alignItems: 'center', borderWidth: 1 },
-  optionsButtonText: { fontSize: 14, fontWeight: '600' },
+  inputContainer: { borderRadius: 12, padding: 16, marginBottom: 16, borderWidth: 1 },
+  inputLabel: { fontSize: 14, fontWeight: '600', marginBottom: 8 },
+  input: { borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 14, minHeight: 48 },
+  inputHint: { fontSize: 12, marginTop: 6, fontStyle: 'italic' },
   convertButton: { borderRadius: 10, padding: 16, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginBottom: 24 },
   convertIcon: { fontSize: 20, marginRight: 8 },
   convertButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
@@ -377,16 +348,4 @@ const styles = StyleSheet.create({
   downloadButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   newButton: { borderRadius: 10, borderWidth: 2, padding: 14, alignItems: 'center' },
   newButtonText: { fontSize: 14, fontWeight: '600' },
-  modalContainer: { flex: 1, paddingTop: 20 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 16 },
-  modalTitle: { fontSize: 20, fontWeight: '700' },
-  closeButton: { fontSize: 24 },
-  modalContent: { flex: 1, paddingHorizontal: 20 },
-  optionSection: { marginBottom: 28 },
-  optionLabel: { fontSize: 14, fontWeight: '600', marginBottom: 12 },
-  buttonGroup: { flexDirection: 'row', gap: 10 },
-  optionButton: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center' },
-  optionButtonText: { fontSize: 12, fontWeight: '600' },
-  applyButton: { paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginHorizontal: 20, marginBottom: 20 },
-  applyButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });

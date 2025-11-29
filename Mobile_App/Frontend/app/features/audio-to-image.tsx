@@ -16,6 +16,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import { useRouter } from 'expo-router';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -40,6 +41,8 @@ export default function AudioToImageScreen() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadedFiles, setDownloadedFiles] = useState<Set<string>>(new Set());
+  const [userId, setUserId] = useState('');
+  const [masterKey, setMasterKey] = useState('');
   const [options, setOptions] = useState<ConversionOptions>({
     compress: true,
   });
@@ -278,17 +281,29 @@ export default function AudioToImageScreen() {
 
       console.log('🚀 Sending conversion request...');
       
+      // Generate credentials
+      const generatedUserId = 'user_' + Date.now();
+      const generatedMasterKey = generateMasterKey();
+      
+      // Save for display
+      setUserId(generatedUserId);
+      setMasterKey(generatedMasterKey);
+      
       // Pass the file object and options separately to the API
       const result = await conversionApi.audioToImage(
         selectedFile,
-        undefined, // userId - optional
+        generatedUserId,
         {
           compress: options.compress,
-          masterKeyHex: generateMasterKey(),
+          masterKeyHex: generatedMasterKey,
         }
       );
       
       console.log('✅ Conversion result:', result);
+      
+      // Store credentials in AsyncStorage for Image to Audio screen
+      await AsyncStorage.setItem('lastUsedUserId', generatedUserId);
+      await AsyncStorage.setItem('lastUsedMasterKey', generatedMasterKey);
       
       clearInterval(simulateProgress);
       setProgress(1);
@@ -532,6 +547,8 @@ export default function AudioToImageScreen() {
     setProgress(0);
     progressAnim.setValue(0);
     setDownloadedFiles(new Set());
+    setUserId('');
+    setMasterKey('');
   };
 
   const formatFileSize = (bytes: number) => {
@@ -795,6 +812,57 @@ export default function AudioToImageScreen() {
                     Encryption Complete!
                   </Text>
                 </View>
+
+                {/* Credentials Card - IMPORTANT! */}
+                {userId && masterKey && (
+                  <View style={[styles.credentialsCard, { backgroundColor: colors.tint + '10', borderColor: colors.tint + '30' }]}>
+                    <View style={styles.credentialsHeader}>
+                      <Text style={styles.credentialsIcon}>🔑</Text>
+                      <Text style={[styles.credentialsTitle, { color: colors.text }]}>
+                        Decryption Credentials
+                      </Text>
+                    </View>
+                    
+                    <Text style={[styles.credentialsWarning, { color: colors.tint }]}>
+                      ⚠️ Save these credentials! You'll need them to decode the images back to audio.
+                    </Text>
+
+                    <View style={styles.credentialItem}>
+                      <Text style={[styles.credentialLabel, { color: colors.icon }]}>User ID:</Text>
+                      <TouchableOpacity 
+                        style={[styles.credentialValue, { backgroundColor: colors.background }]}
+                        onPress={() => {
+                          // Copy to clipboard would go here
+                          Alert.alert('User ID', userId, [{ text: 'OK' }]);
+                        }}
+                      >
+                        <Text style={[styles.credentialText, { color: colors.text }]} selectable>
+                          {userId}
+                        </Text>
+                        <Text style={styles.copyIcon}>📋</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.credentialItem}>
+                      <Text style={[styles.credentialLabel, { color: colors.icon }]}>Master Key:</Text>
+                      <TouchableOpacity 
+                        style={[styles.credentialValue, { backgroundColor: colors.background }]}
+                        onPress={() => {
+                          Alert.alert('Master Key', masterKey, [{ text: 'OK' }]);
+                        }}
+                      >
+                        <Text style={[styles.credentialText, { color: colors.text, fontSize: 11 }]} selectable>
+                          {masterKey}
+                        </Text>
+                        <Text style={styles.copyIcon}>📋</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={[styles.credentialsNote, { color: colors.icon }]}>
+                      💡 These credentials are automatically saved for the "Image to Audio" tab
+                    </Text>
+                  </View>
+                )}
 
                 {/* Stats Cards */}
                 <View style={styles.statsContainer}>
@@ -1145,6 +1213,62 @@ const styles = StyleSheet.create({
   successTitle: {
     fontSize: 24,
     fontWeight: '800',
+  },
+  credentialsCard: {
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    borderWidth: 2,
+  },
+  credentialsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  credentialsIcon: {
+    fontSize: 32,
+  },
+  credentialsTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  credentialsWarning: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  credentialItem: {
+    marginBottom: 16,
+  },
+  credentialLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  credentialValue: {
+    borderRadius: 10,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  credentialText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  copyIcon: {
+    fontSize: 18,
+    marginLeft: 8,
+  },
+  credentialsNote: {
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 16,
+    marginTop: 4,
   },
   statsContainer: {
     flexDirection: 'row',

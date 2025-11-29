@@ -13,6 +13,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -25,6 +26,12 @@ interface DownloadedFile {
   date: string;
 }
 
+interface ExtractedFiles {
+  files: string[];
+  directory: string;
+  savedToGallery: boolean;
+}
+
 export default function DownloadsScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
@@ -32,6 +39,9 @@ export default function DownloadsScreen() {
   const [downloads, setDownloads] = useState<DownloadedFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  const [savingToGallery, setSavingToGallery] = useState(false);
+  const [extractedFiles, setExtractedFiles] = useState<ExtractedFiles | null>(null);
+  const [progressText, setProgressText] = useState('');
 
   useEffect(() => {
     // Request media library permission for saving images/zip to gallery
@@ -58,11 +68,35 @@ export default function DownloadsScreen() {
         return;
       }
 
-      // Note: expo-file-system doesn't have readdir, so we'll track downloads manually
-      // In a real app, you'd store this in AsyncStorage or a state management solution
-      setDownloads([]);
+      // Load downloads from AsyncStorage
+      const storedDownloads = await AsyncStorage.getItem('downloadedFiles');
+      if (storedDownloads) {
+        const parsedDownloads: DownloadedFile[] = JSON.parse(storedDownloads);
+        
+        // Verify files still exist
+        const existingDownloads = await Promise.all(
+          parsedDownloads.map(async (file) => {
+            const fileInfo = await FileSystem.getInfoAsync(file.path);
+            if (fileInfo.exists) {
+              return file;
+            }
+            return null;
+          })
+        );
+        
+        const validDownloads = existingDownloads.filter(f => f !== null) as DownloadedFile[];
+        setDownloads(validDownloads);
+        
+        // Update AsyncStorage with valid files only
+        if (validDownloads.length !== parsedDownloads.length) {
+          await AsyncStorage.setItem('downloadedFiles', JSON.stringify(validDownloads));
+        }
+      } else {
+        setDownloads([]);
+      }
     } catch (error) {
       console.error('Failed to load downloads:', error);
+      setDownloads([]);
     }
   };
 
@@ -85,6 +119,7 @@ export default function DownloadsScreen() {
   const downloadZipFile = async (file: any) => {
     try {
       setLoading(true);
+      setProgressText('Creating downloads directory...');
 
       // Create downloads directory
       const downloadsDir = `${FileSystem.documentDirectory}downloads/`;
@@ -101,6 +136,7 @@ export default function DownloadsScreen() {
         return;
       }
 
+      setProgressText('Copying ZIP file...');
       // Copy file to downloads
       const { copyAsync } = await import('expo-file-system');
       await copyAsync({
@@ -108,7 +144,9 @@ export default function DownloadsScreen() {
         to: zipPath,
       });
 
+      setProgressText('Saving to gallery...');
       // Try saving ZIP to gallery album
+      let gallerySuccess = false;
       try {
         const perm = await MediaLibrary.getPermissionsAsync();
         if ((perm as any).status === 'granted' || (perm as any).status === 'limited') {
@@ -121,17 +159,39 @@ export default function DownloadsScreen() {
             await MediaLibrary.addAssetsToAlbumAsync([asset], existing.id, false);
           }
           console.log('✅ ZIP saved to gallery album:', albumName);
+          gallerySuccess = true;
         }
-      } catch (err) {
+      } catch (err: any) {
         console.warn('Could not save ZIP to gallery:', err);
+        Alert.alert('⚠️ Partial Success', `ZIP saved locally but could not save to gallery:\n${err.message}`);
       }
 
-      Alert.alert('✅ Success', `ZIP file saved to downloads folder`);
+      // Save to downloads list in AsyncStorage
+      const fileInfo = await FileSystem.getInfoAsync(zipPath);
+      const downloadedFile: DownloadedFile = {
+        name: file.name,
+        path: zipPath,
+        size: (fileInfo as any).size || 0,
+        date: new Date().toISOString(),
+      };
+      
+      const storedDownloads = await AsyncStorage.getItem('downloadedFiles');
+      const currentDownloads: DownloadedFile[] = storedDownloads ? JSON.parse(storedDownloads) : [];
+      currentDownloads.unshift(downloadedFile); // Add to beginning
+      await AsyncStorage.setItem('downloadedFiles', JSON.stringify(currentDownloads));
+
+      if (gallerySuccess) {
+        Alert.alert('✅ Success', `ZIP file saved to downloads folder and Pictures/EchoCipher album!`);
+      } else {
+        Alert.alert('✅ Success', `ZIP file saved to downloads folder`);
+      }
       await loadDownloads();
     } catch (error: any) {
-      Alert.alert('Download Failed', error.message);
+      console.error('Download error:', error);
+      Alert.alert('Download Failed', `Error: ${error.message || 'Unknown error occurred'}`);
     } finally {
       setLoading(false);
+      setProgressText('');
     }
   };
 
@@ -152,12 +212,14 @@ export default function DownloadsScreen() {
       }
 
       setExtracting(true);
+      setProgressText('Reading ZIP file...');
 
       // Read ZIP file as base64
       const base64 = await FileSystem.readAsStringAsync(zipFile.uri, {
         encoding: 'base64',
       });
 
+      setProgressText('Parsing ZIP contents...');
       // Convert base64 to binary
       const binaryString = atob(base64);
       const bytes = new Uint8Array(binaryString.length);
@@ -169,6 +231,7 @@ export default function DownloadsScreen() {
       const zip = await JSZip.loadAsync(bytes);
       const extractDir = `${FileSystem.documentDirectory}extracted/${zipFile.name.replace('.zip', '')}/`;
       
+      setProgressText('Creating extraction directory...');
       // Create extraction directory
       const dirInfo = await FileSystem.getInfoAsync(extractDir);
       if (!dirInfo.exists) {
@@ -177,10 +240,12 @@ export default function DownloadsScreen() {
 
       let extractedCount = 0;
       const fileNames: string[] = [];
+      const totalFiles = Object.keys(zip.files).filter(k => !zip.files[k].dir).length;
 
       // Extract all files
       for (const [filename, file] of Object.entries(zip.files)) {
         if (!file.dir) {
+          setProgressText(`Extracting file ${extractedCount + 1}/${totalFiles}...`);
           const content = await file.async('base64');
           const filePath = `${extractDir}${filename}`;
           
@@ -193,53 +258,94 @@ export default function DownloadsScreen() {
         }
       }
 
-      // Try saving extracted images to gallery album
-      try {
-        const perm = await MediaLibrary.getPermissionsAsync();
-        if ((perm as any).status === 'granted' || (perm as any).status === 'limited') {
-          const albumName = 'EchoCipher';
-          let album = await MediaLibrary.getAlbumAsync(albumName);
-
-          for (const fname of fileNames) {
-            try {
-              const filePath = `${extractDir}${fname}`;
-              const asset = await MediaLibrary.createAssetAsync(filePath);
-              if (!album) {
-                album = await MediaLibrary.createAlbumAsync(albumName, asset, false);
-              } else {
-                await MediaLibrary.addAssetsToAlbumAsync([asset], album.id, false);
-              }
-            } catch (innerErr) {
-              console.warn('Failed to save extracted file to gallery:', innerErr);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Could not save extracted files to gallery:', err);
-      }
+      // Store extracted files info for later gallery save
+      setExtractedFiles({
+        files: fileNames.map(f => `${extractDir}${f}`),
+        directory: extractDir,
+        savedToGallery: false,
+      });
 
       Alert.alert(
         '✅ Extraction Complete',
-        `Extracted ${extractedCount} files to:\n${extractDir}\n\nFiles: ${fileNames.join(', ')}`,
+        `Extracted ${extractedCount} files to app storage.\n\nUse "Save to Gallery" button to save images to Pictures/EchoCipher album.`,
         [
           {
             text: 'OK',
-            onPress: async () => {
-              // Share first file as example
-              if (fileNames.length > 0 && await Sharing.isAvailableAsync()) {
-                const firstFile = `${extractDir}${fileNames[0]}`;
-                await Sharing.shareAsync(firstFile);
-              }
-            }
           }
         ]
       );
 
     } catch (error: any) {
       console.error('Extraction error:', error);
-      Alert.alert('Extraction Failed', error.message || 'Failed to extract ZIP file');
+      Alert.alert('Extraction Failed', `Error: ${error.message || 'Failed to extract ZIP file'}\n\nPlease try again or check the ZIP file.`);
     } finally {
       setExtracting(false);
+      setProgressText('');
+    }
+  };
+
+  const handleSaveToGallery = async () => {
+    if (!extractedFiles || extractedFiles.files.length === 0) {
+      Alert.alert('No Files', 'Please extract a ZIP file first');
+      return;
+    }
+
+    try {
+      setSavingToGallery(true);
+      setProgressText('Requesting gallery permissions...');
+
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if ((perm as any).status !== 'granted' && (perm as any).status !== 'limited') {
+        Alert.alert('Permission Denied', 'Gallery access is required to save images. Please enable it in Settings.');
+        return;
+      }
+
+      const albumName = 'EchoCipher';
+      let album = await MediaLibrary.getAlbumAsync(albumName);
+      let savedCount = 0;
+      let failedCount = 0;
+
+      setProgressText(`Saving 0/${extractedFiles.files.length} files...`);
+
+      for (let i = 0; i < extractedFiles.files.length; i++) {
+        const filePath = extractedFiles.files[i];
+        try {
+          setProgressText(`Saving ${i + 1}/${extractedFiles.files.length} files...`);
+          const asset = await MediaLibrary.createAssetAsync(filePath);
+          if (!album) {
+            album = await MediaLibrary.createAlbumAsync(albumName, asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album.id, false);
+          }
+          savedCount++;
+        } catch (innerErr: any) {
+          console.warn('Failed to save file to gallery:', innerErr);
+          failedCount++;
+        }
+      }
+
+      setExtractedFiles({
+        ...extractedFiles,
+        savedToGallery: true,
+      });
+
+      if (failedCount === 0) {
+        Alert.alert(
+          '✅ Success!',
+          `All ${savedCount} files saved to Pictures/${albumName} album!\n\nYou can view them in your device gallery.`
+        );
+      } else {
+        Alert.alert(
+          '⚠️ Partial Success',
+          `Saved ${savedCount} files to gallery.\nFailed: ${failedCount} files.\n\nSome files may not be compatible image formats.`
+        );
+      }
+    } catch (error: any) {
+      console.error('Save to gallery error:', error);
+      Alert.alert('Save Failed', `Error: ${error.message || 'Could not save to gallery'}`);
+    } finally {
+      setSavingToGallery(false);
+      setProgressText('');
     }
   };
 
@@ -268,6 +374,8 @@ export default function DownloadsScreen() {
               }
               
               setDownloads([]);
+              setExtractedFiles(null);
+              await AsyncStorage.setItem('downloadedFiles', JSON.stringify([]));
               Alert.alert('✅ Success', 'All downloads cleared');
             } catch (error) {
               Alert.alert('Error', 'Failed to clear downloads');
@@ -276,6 +384,67 @@ export default function DownloadsScreen() {
         },
       ]
     );
+  };
+
+  const handleDeleteFile = async (file: DownloadedFile) => {
+    Alert.alert(
+      'Delete File',
+      `Delete ${file.name}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await FileSystem.deleteAsync(file.path, { idempotent: true });
+              const updatedDownloads = downloads.filter(d => d.path !== file.path);
+              setDownloads(updatedDownloads);
+              await AsyncStorage.setItem('downloadedFiles', JSON.stringify(updatedDownloads));
+              Alert.alert('✅ Deleted', 'File removed successfully');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete file');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleShareFile = async (file: DownloadedFile) => {
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(file.path);
+      } else {
+        Alert.alert('Not Available', 'Sharing is not available on this device');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to share file');
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
   };
 
   return (
@@ -306,8 +475,71 @@ export default function DownloadsScreen() {
           </Text>
         </View>
 
+        {/* Progress Indicator */}
+        {progressText !== '' && (
+          <View style={[styles.progressCard, { backgroundColor: colors.card }]}>
+            <ActivityIndicator size="small" color={colors.tint} />
+            <Text style={[styles.progressText, { color: colors.text }]}>
+              {progressText}
+            </Text>
+          </View>
+        )}
+
         {/* Main Card */}
         <View style={[styles.mainCard, { backgroundColor: colors.card }]}>
+          
+          {/* Downloaded Files List */}
+          {downloads.length > 0 && (
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                📂 Downloaded ZIP Files ({downloads.length})
+              </Text>
+              <Text style={[styles.sectionDescription, { color: colors.icon }]}>
+                Tap a file to extract or manage
+              </Text>
+
+              <View style={styles.filesList}>
+                {downloads.map((file, index) => (
+                  <View key={index} style={[styles.fileItem, { backgroundColor: colors.background }]}>
+                    <View style={styles.fileInfo}>
+                      <Text style={[styles.fileName, { color: colors.text }]} numberOfLines={1}>
+                        📦 {file.name}
+                      </Text>
+                      <View style={styles.fileMetadata}>
+                        <Text style={[styles.fileSize, { color: colors.icon }]}>
+                          {formatFileSize(file.size)}
+                        </Text>
+                        <Text style={[styles.fileDot, { color: colors.icon }]}> • </Text>
+                        <Text style={[styles.fileDate, { color: colors.icon }]}>
+                          {formatDate(file.date)}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.fileActions}>
+                      <TouchableOpacity
+                        style={[styles.actionButton, { backgroundColor: colors.tint + '20' }]}
+                        onPress={() => handleExtractZip({ uri: file.path, name: file.name })}
+                      >
+                        <Text style={styles.actionButtonText}>Extract</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionButton, { backgroundColor: colors.tint + '20' }]}
+                        onPress={() => handleShareFile(file)}
+                      >
+                        <Text style={styles.actionButtonText}>Share</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionButton, { backgroundColor: '#ff444420' }]}
+                        onPress={() => handleDeleteFile(file)}
+                      >
+                        <Text style={[styles.actionButtonText, { color: '#ff4444' }]}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
           
           {/* Extract ZIP Section */}
           <View style={styles.section}>
@@ -345,6 +577,58 @@ export default function DownloadsScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Save to Gallery Section */}
+          {extractedFiles && extractedFiles.files.length > 0 && (
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                🖼️ Save to Gallery
+              </Text>
+              <Text style={[styles.sectionDescription, { color: colors.icon }]}>
+                Save {extractedFiles.files.length} extracted file(s) to Pictures/EchoCipher
+              </Text>
+
+              <TouchableOpacity
+                style={styles.extractButton}
+                onPress={handleSaveToGallery}
+                disabled={savingToGallery || extractedFiles.savedToGallery}
+                activeOpacity={0.7}
+              >
+                <LinearGradient
+                  colors={extractedFiles.savedToGallery 
+                    ? ['#28a745', '#20c997'] 
+                    : ['#4facfe', '#00f2fe']
+                  }
+                  style={styles.gradientButton}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                >
+                  {savingToGallery ? (
+                    <>
+                      <ActivityIndicator color="#ffffff" />
+                      <Text style={styles.buttonText}>Saving...</Text>
+                    </>
+                  ) : extractedFiles.savedToGallery ? (
+                    <>
+                      <Text style={styles.buttonIcon}>✅</Text>
+                      <Text style={styles.buttonText}>Saved to Gallery</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.buttonIcon}>💾</Text>
+                      <Text style={styles.buttonText}>Save to Gallery</Text>
+                    </>
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+
+              {extractedFiles.savedToGallery && (
+                <Text style={[styles.successText, { color: '#28a745' }]}>
+                  ✅ Files available in your device gallery under Pictures/EchoCipher
+                </Text>
+              )}
+            </View>
+          )}
+
           {/* Info Section */}
           <View style={[styles.infoSection, { backgroundColor: colors.background }]}>
             <Text style={styles.infoIcon}>💡</Text>
@@ -354,9 +638,9 @@ export default function DownloadsScreen() {
               </Text>
               <Text style={[styles.infoText, { color: colors.icon }]}>
                 1. Tap "Select & Extract ZIP" to choose a ZIP file{'\n'}
-                2. The encrypted images will be extracted{'\n'}
-                3. Files are saved in the app's document directory{'\n'}
-                4. You can share extracted files after extraction
+                2. Wait for extraction to complete{'\n'}
+                3. Tap "Save to Gallery" to save to Pictures/EchoCipher{'\n'}
+                4. View images in your device gallery app
               </Text>
             </View>
           </View>
@@ -371,6 +655,9 @@ export default function DownloadsScreen() {
             </Text>
             <Text style={[styles.storagePath, { color: colors.icon }]}>
               Extracted: {FileSystem.documentDirectory}extracted/
+            </Text>
+            <Text style={[styles.storagePath, { color: colors.icon }]}>
+              Gallery: Pictures/EchoCipher (after saving)
             </Text>
           </View>
 
@@ -395,8 +682,9 @@ export default function DownloadsScreen() {
             </Text>
             <Text style={[styles.tipsText, { color: colors.icon }]}>
               • Extracted files are stored locally on your device{'\n'}
+              • Use "Save to Gallery" to access files permanently{'\n'}
+              • Gallery files are saved to Pictures/EchoCipher album{'\n'}
               • Clear downloads regularly to save space{'\n'}
-              • Use the share button to save files to your gallery{'\n'}
               • Keep your encrypted ZIP files safe for backup
             </Text>
           </View>
@@ -439,6 +727,19 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
   },
+  progressCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  progressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
   mainCard: {
     borderRadius: 24,
     padding: 24,
@@ -451,6 +752,53 @@ const styles = StyleSheet.create({
   },
   section: {
     marginBottom: 24,
+  },
+  filesList: {
+    gap: 12,
+  },
+  fileItem: {
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+  },
+  fileInfo: {
+    marginBottom: 10,
+  },
+  fileName: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  fileMetadata: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fileSize: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  fileDot: {
+    fontSize: 12,
+  },
+  fileDate: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  fileActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  actionButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    flex: 1,
+    alignItems: 'center',
+  },
+  actionButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0a7ea4',
   },
   sectionTitle: {
     fontSize: 18,
@@ -481,6 +829,12 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '700',
+  },
+  successText: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 12,
+    textAlign: 'center',
   },
   infoSection: {
     borderRadius: 16,

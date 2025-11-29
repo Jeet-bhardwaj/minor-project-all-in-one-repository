@@ -289,4 +289,104 @@ export const encryptionApi = {
   },
 };
 
+// ============ VERCEL API (AudioImageCarrier) ============
+const VERCEL_API_URL = 'https://minor-project-all-in-one-repository.vercel.app';
+const VERCEL_API_KEY = 'x7kX9jb8LyzVmJ5Dvy06n9yl0lSxB4Ut9ZidUWAZ0dk';
+
+const vercelApiClient = axios.create({
+  baseURL: VERCEL_API_URL,
+  timeout: 120000, // 2 minutes
+  headers: {
+    'X-API-Key': VERCEL_API_KEY,
+  },
+});
+
+export const audioImageApi = {
+  /**
+   * Encode audio file to encrypted PNG images
+   * @param audioFileUri - Local file URI
+   * @param userId - User identifier
+   * @param masterKey - 64-character hex master key
+   * @param compress - Enable compression (default: true)
+   */
+  encodeAudioToImage: async (
+    audioFileUri: string,
+    userId: string,
+    masterKey: string,
+    compress: boolean = true
+  ): Promise<Blob> => {
+    const formData = new FormData();
+    
+    // Create file object from URI
+    const filename = audioFileUri.split('/').pop() || 'audio.mp3';
+    const file = {
+      uri: audioFileUri,
+      type: 'audio/mpeg', // Will be adjusted based on extension
+      name: filename,
+    } as any;
+    
+    formData.append('audio_file', file);
+    formData.append('user_id', userId);
+    formData.append('master_key', masterKey);
+    formData.append('compress', String(compress));
+
+    const response = await vercelApiClient.post('/api/v1/encode', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      responseType: 'blob',
+    });
+
+    return response.data;
+  },
+
+  /**
+   * Decode encrypted PNG images back to audio
+   * @param zipFileUri - Local ZIP file URI containing encrypted images
+   * @param userId - Same user ID used during encoding
+   * @param masterKey - Same 64-character hex master key used during encoding
+   * @param outputFilename - Optional custom output filename
+   */
+  decodeImageToAudio: async (
+    zipFileUri: string,
+    userId: string,
+    masterKey: string,
+    outputFilename?: string
+  ): Promise<Blob> => {
+    const formData = new FormData();
+    
+    // Create file object from URI
+    const filename = zipFileUri.split('/').pop() || 'encrypted.zip';
+    const file = {
+      uri: zipFileUri,
+      type: 'application/zip',
+      name: filename,
+    } as any;
+    
+    formData.append('encrypted_zip', file);
+    formData.append('user_id', userId);
+    formData.append('master_key', masterKey);
+    if (outputFilename) {
+      formData.append('output_filename', outputFilename);
+    }
+
+    const response = await vercelApiClient.post('/api/v1/decode', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      responseType: 'blob',
+    });
+
+    return response.data;
+  },
+
+  /**
+   * Check API health
+   */
+  checkHealth: async (): Promise<any> => {
+    const response = await vercelApiClient.get('/health');
+    return response.data;
+  },
+};
+
 export default apiClient;
