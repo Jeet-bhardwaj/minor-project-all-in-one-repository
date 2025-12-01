@@ -11,6 +11,15 @@ import {
   downloadConversionZipController
 } from '../controllers/conversionController';
 
+// Import GridFS controllers
+import {
+  audioToImageGridFS,
+  imageToAudioGridFS,
+  getUserConversions,
+  deleteConversion,
+  downloadConversionZip
+} from '../controllers/gridfsConversionController';
+
 const router = Router();
 
 // Configure multer for file uploads
@@ -175,6 +184,58 @@ router.get(
 router.get(
   '/conversions/:conversionId/:fileName',
   downloadConversionController
+);
+
+/**
+ * ============================================
+ * GridFS-based Conversion Routes (NEW)
+ * ============================================
+ */
+
+/**
+ * POST /api/v2/audio-to-image
+ * Convert audio to encrypted images using GridFS storage
+ */
+router.post(
+  '/v2/audio-to-image',
+  upload.single('audio'),
+  audioToImageGridFS
+);
+
+/**
+ * POST /api/v2/image-to-audio
+ * Convert encrypted images back to audio using GridFS retrieval
+ */
+router.post(
+  '/v2/image-to-audio',
+  imageToAudioGridFS
+);
+
+/**
+ * GET /api/v2/user/:userId/conversions
+ * Get all conversions for a specific user
+ */
+router.get(
+  '/v2/user/:userId/conversions',
+  getUserConversions
+);
+
+/**
+ * DELETE /api/v2/conversions/:userId/:conversionId
+ * Delete a conversion and all associated files from GridFS
+ */
+router.delete(
+  '/v2/conversions/:userId/:conversionId',
+  deleteConversion
+);
+
+/**
+ * GET /api/v2/conversions/:userId/:conversionId/download-zip
+ * Download ZIP file from GridFS for a specific conversion
+ */
+router.get(
+  '/v2/conversions/:userId/:conversionId/download-zip',
+  downloadConversionZip
 );
 
 export default router;

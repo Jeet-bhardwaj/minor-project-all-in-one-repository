@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import conversionRoutes from './routes/conversionRoutes';
 import authRoutes from './routes/authRoutes';
 import { connectDB, isDBConnected } from './config/database';
+import { initGridFS } from './services/gridfsService';
 import Logger from './utils/logger';
 
 dotenv.config();
@@ -12,10 +13,15 @@ dotenv.config();
 const app: Express = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Initialize database connection
+// Initialize database connection and GridFS
 (async () => {
   try {
     await connectDB();
+    Logger.info('STARTUP', '✅ MongoDB connected successfully');
+    
+    // Initialize GridFS
+    initGridFS();
+    Logger.info('STARTUP', '✅ GridFS initialized successfully');
   } catch (error) {
     Logger.error('STARTUP', 'Failed to connect to MongoDB');
     process.exit(1);

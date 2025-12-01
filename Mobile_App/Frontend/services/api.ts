@@ -389,4 +389,134 @@ export const audioImageApi = {
   },
 };
 
+// ============ GRIDFS V2 ENDPOINTS ============
+/**
+ * GridFS-based conversion API (v2)
+ * Stores conversions in MongoDB with encrypted master keys
+ */
+
+export interface GridFSConversionResponse {
+  success: boolean;
+  conversionId: string;
+  userId: string;
+  originalFileName: string;
+  numImages: number;
+  totalSize: number;
+  message: string;
+}
+
+export interface UserConversion {
+  conversionId: string;
+  originalFileName: string;
+  fileSize: number;
+  audioFormat: string;
+  numImages: number;
+  totalImageSize: number;
+  compressed: boolean;
+  createdAt: string;
+  createdAgo: string;
+  fileSizeReadable: string;
+}
+
+export interface GetConversionsResponse {
+  success: boolean;
+  userId: string;
+  totalConversions: number;
+  conversions: UserConversion[];
+}
+
+export const gridfsApi = {
+  /**
+   * Upload audio and convert to images (stored in GridFS)
+   * @param audioFileUri - Local audio file URI
+   * @param userId - User identifier
+   * @param compress - Enable compression (default: true)
+   */
+  audioToImage: async (
+    audioFileUri: string,
+    userId: string,
+    compress: boolean = true
+  ): Promise<GridFSConversionResponse> => {
+    const formData = new FormData();
+    
+    const filename = audioFileUri.split('/').pop() || 'audio.mp3';
+    const file = {
+      uri: audioFileUri,
+      type: 'audio/mpeg',
+      name: filename,
+    } as any;
+    
+    formData.append('audio', file);
+    formData.append('userId', userId);
+    formData.append('compress', String(compress));
+
+    const response = await apiClient.post<GridFSConversionResponse>(
+      '/v2/audio-to-image',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 120000, // 2 minutes for large files
+      }
+    );
+
+    return response.data;
+  },
+
+  /**
+   * Download audio from GridFS conversion
+   * @param userId - User identifier
+   * @param conversionId - Conversion ID from audioToImage response
+   */
+  imageToAudio: async (
+    userId: string,
+    conversionId: string
+  ): Promise<Blob> => {
+    const response = await apiClient.post(
+      '/v2/image-to-audio',
+      {
+        userId,
+        conversionId,
+      },
+      {
+        responseType: 'blob',
+        timeout: 120000, // 2 minutes
+      }
+    );
+
+    return response.data;
+  },
+
+  /**
+   * Get all conversions for a user
+   * @param userId - User identifier
+   */
+  getUserConversions: async (
+    userId: string
+  ): Promise<GetConversionsResponse> => {
+    const response = await apiClient.get<GetConversionsResponse>(
+      `/v2/user/${userId}/conversions`
+    );
+
+    return response.data;
+  },
+
+  /**
+   * Delete a conversion and all associated files
+   * @param userId - User identifier
+   * @param conversionId - Conversion ID to delete
+   */
+  deleteConversion: async (
+    userId: string,
+    conversionId: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const response = await apiClient.delete(
+      `/v2/conversions/${userId}/${conversionId}`
+    );
+
+    return response.data;
+  },
+};
+
 export default apiClient;

@@ -1,6 +1,6 @@
 import React from 'react';
-import ImageToAudioScreen from '../features/image-to-audio';
+import ImageToAudioGridFSScreen from '../features/image-to-audio-gridfs';
 
 export default function ImageToAudioTab() {
-  return <ImageToAudioScreen />;
+  return <ImageToAudioGridFSScreen />;
 }
