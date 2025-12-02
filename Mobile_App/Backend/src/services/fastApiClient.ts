@@ -166,7 +166,7 @@ export class FastApiClient {
 
       // Create form data
       const formData = new FormData();
-      formData.append('encrypted_zip', createReadStream(request.encryptedZipPath));
+      formData.append('images', createReadStream(request.encryptedZipPath));
       formData.append('user_id', request.userId);
       formData.append('master_key', request.masterKey);
 

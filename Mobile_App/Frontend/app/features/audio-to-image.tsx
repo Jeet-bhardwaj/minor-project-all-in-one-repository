@@ -457,30 +457,6 @@ export default function AudioToImageScreen() {
   };
 
   const autoDownloadFiles = async (fileNames: string[], conversionId: string) => {
-            } catch (err) {
-              reject(err);
-            }
-          };
-          reader.onerror = reject;
-        });
-
-        Alert.alert(
-          '✨ Success!', 
-          `ZIP file with ${conversionResult.numImages} encrypted images is ready!\n\nSaved to Downloads folder.`
-        );
-      }
-    } catch (error: any) {
-      console.error('❌ Failed to download ZIP:', error);
-      Alert.alert(
-        '⚠️ Download Failed', 
-        error.message || 'Could not download ZIP file. Please try again.'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const autoDownloadFiles = async (fileNames: string[], conversionId: string) => {
     try {
       const baseUrl = process.env.EXPO_PUBLIC_API_URL || 
                       (Platform.OS === 'web' ? 'http://localhost:3000/api' : 'http://192.168.29.67:3000/api');

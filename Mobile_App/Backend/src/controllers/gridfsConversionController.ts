@@ -200,12 +200,19 @@ export const audioToImageGridFS = async (req: Request, res: Response, next: Next
  * Image to Audio with GridFS Retrieval
  * Retrieves encrypted images from GridFS and decrypts to audio
  */
-export const imageToAudioGridFS = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const imageToAudioGridFS = async (req: Request, res: Response): Promise<void> => {
   try {
     const { userId, conversionId } = req.body;
 
+    Logger.info('CONVERSION', `📥 Received decode request`, { 
+      userId, 
+      conversionId,
+      body: req.body 
+    });
+
     // Validate inputs
     if (!userId || !conversionId) {
+      Logger.warn('CONVERSION', `❌ Missing required fields`, { userId, conversionId });
       res.status(400).json({
         success: false,
         error: 'Missing required fields',
@@ -217,10 +224,18 @@ export const imageToAudioGridFS = async (req: Request, res: Response, next: Next
     Logger.info('CONVERSION', `🔄 Decoding request: ${conversionId}`, { userId });
 
     // Find the conversion (include masterKey field)
+    Logger.info('CONVERSION', `🔍 Searching for conversion in database...`);
     const conversion = await Conversion.findOne({
       conversionId: conversionId,
       userId: userId, // Security: ensure user owns this conversion
     }).select('+masterKey');
+
+    Logger.info('CONVERSION', `📊 Database query result`, { 
+      found: !!conversion,
+      conversionId: conversion?.conversionId,
+      userId: conversion?.userId,
+      status: conversion?.status 
+    });
 
     if (!conversion) {
       Logger.warn('CONVERSION', `❌ Conversion not found or access denied`, { userId, conversionId });
@@ -247,22 +262,41 @@ export const imageToAudioGridFS = async (req: Request, res: Response, next: Next
     });
 
     // Decrypt the master key
-    const masterKey = EncryptionService.decryptMasterKey(conversion.masterKey);
-    Logger.info('CONVERSION', `✅ Master key decrypted`);
+    let masterKey: string;
+    try {
+      masterKey = EncryptionService.decryptMasterKey(conversion.masterKey);
+      Logger.info('CONVERSION', `✅ Master key decrypted successfully`);
+    } catch (error: any) {
+      Logger.error('CONVERSION', `❌ Master key decryption failed: ${error.message}`);
+      throw new Error(`Master key decryption failed: ${error.message}`);
+    }
 
     // Download ZIP file from GridFS
     Logger.info('CONVERSION', `📥 Downloading ZIP from GridFS: ${conversion.zipFileId}`);
-    const zipBuffer = await downloadFromGridFS(conversion.zipFileId.toString());
-    Logger.info('CONVERSION', `✅ ZIP downloaded: ${zipBuffer.length} bytes`);
+    let zipBuffer: Buffer;
+    try {
+      zipBuffer = await downloadFromGridFS(conversion.zipFileId.toString());
+      Logger.info('CONVERSION', `✅ ZIP downloaded: ${zipBuffer.length} bytes`);
+    } catch (error: any) {
+      Logger.error('CONVERSION', `❌ GridFS download failed: ${error.message}`);
+      throw new Error(`GridFS download failed: ${error.message}`);
+    }
 
     // Save to temp file for FastAPI
     const tempDir = path.join(__dirname, '../../temp');
     await fs.mkdir(tempDir, { recursive: true });
     const tempZipPath = path.join(tempDir, `${conversionId}.zip`);
-    await fs.writeFile(tempZipPath, zipBuffer);
-    Logger.info('CONVERSION', `✅ ZIP saved to temp: ${tempZipPath}`);
+    
+    try {
+      await fs.writeFile(tempZipPath, zipBuffer);
+      Logger.info('CONVERSION', `✅ ZIP saved to temp: ${tempZipPath}`);
+    } catch (error: any) {
+      Logger.error('CONVERSION', `❌ Failed to save ZIP to temp: ${error.message}`);
+      throw new Error(`Failed to save temp file: ${error.message}`);
+    }
 
     // Call FastAPI to decode images → audio
+    Logger.info('CONVERSION', `🔄 Calling FastAPI decode with userId=${userId}, masterKey=${masterKey.substring(0, 10)}...`);
     const result = await fastApiClient.decodeImageToAudio({
       encryptedZipPath: tempZipPath,
       userId: userId,
@@ -270,7 +304,10 @@ export const imageToAudioGridFS = async (req: Request, res: Response, next: Next
       outputFilename: conversion.originalFileName,
     });
 
+    Logger.info('CONVERSION', `📊 FastAPI result: success=${result.success}, audioPath=${result.audioFilePath}`);
+
     if (!result.success || !result.audioFilePath) {
+      Logger.error('CONVERSION', `❌ FastAPI decoding failed: ${result.error}`);
       throw new Error(result.error || 'FastAPI decoding failed');
     }
 
@@ -293,8 +330,18 @@ export const imageToAudioGridFS = async (req: Request, res: Response, next: Next
     });
 
   } catch (error: any) {
-    Logger.error('CONVERSION', `❌ Decode error: ${error.message}`);
-    next(error);
+    Logger.error('CONVERSION', `❌ Decode error: ${error.message}`, {
+      stack: error.stack,
+      userId: req.body.userId,
+      conversionId: req.body.conversionId
+    });
+    
+    // Send detailed error response
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 };
 

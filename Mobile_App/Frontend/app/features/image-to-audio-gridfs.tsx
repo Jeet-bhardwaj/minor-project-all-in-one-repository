@@ -9,7 +9,9 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  TextInput,
 } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -32,6 +34,13 @@ export default function ImageToAudioGridFSScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [decodingId, setDecodingId] = useState<string | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
+
+  // Manual upload mode state
+  const [showManualUpload, setShowManualUpload] = useState(false);
+  const [selectedZipFile, setSelectedZipFile] = useState<any>(null);
+  const [manualUserId, setManualUserId] = useState('');
+  const [manualMasterKey, setManualMasterKey] = useState('');
+  const [manualDecoding, setManualDecoding] = useState(false);
 
   useEffect(() => {
     loadUserId();
@@ -86,7 +95,16 @@ export default function ImageToAudioGridFSScreen() {
     try {
       setDecodingId(conversion.conversionId);
 
-      console.log('🎵 Decoding conversion:', conversion.conversionId);
+      console.log('🎵 Decoding conversion:', {
+        conversionId: conversion.conversionId,
+        userId: userId,
+        originalFileName: conversion.originalFileName
+      });
+
+      if (!userId) {
+        Alert.alert('Error', 'User ID not found. Please restart the app.');
+        return;
+      }
 
       // Call GridFS API to decode
       const audioBlob = await gridfsApi.imageToAudio(userId, conversion.conversionId);
@@ -107,17 +125,31 @@ export default function ImageToAudioGridFSScreen() {
 
         console.log('✅ Audio saved to:', outputPath);
 
-        // Offer to share or play
+        // Offer to share, play, or download
         Alert.alert(
-          'Success!',
-          'Audio decoded successfully',
+          '✅ Success!',
+          `Audio decoded successfully!\n\nSaved as: ${outputFilename}`,
           [
             {
-              text: 'Play',
+              text: '📥 Download',
+              onPress: async () => {
+                try {
+                  const downloadPath = `${FileSystem.documentDirectory}Downloads/${outputFilename}`;
+                  await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}Downloads`, { intermediates: true });
+                  await FileSystem.copyAsync({ from: outputPath, to: downloadPath });
+                  Alert.alert('Downloaded', `Saved to Downloads folder:\n${outputFilename}`);
+                } catch (err) {
+                  console.error('Download error:', err);
+                  shareAudio(outputPath); // Fallback to share
+                }
+              },
+            },
+            {
+              text: '▶️ Play',
               onPress: () => playAudio(outputPath),
             },
             {
-              text: 'Share',
+              text: '📤 Share',
               onPress: () => shareAudio(outputPath),
             },
             {
@@ -178,6 +210,135 @@ export default function ImageToAudioGridFSScreen() {
     } catch (error) {
       console.error('Share error:', error);
       Alert.alert('Error', 'Failed to share audio');
+    }
+  };
+
+  const handlePickZipFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/zip',
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const file = result.assets[0];
+        setSelectedZipFile(file);
+        Alert.alert('✅ File Selected', `${file.name}\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to pick ZIP file');
+    }
+  };
+
+  const handleManualDecode = async () => {
+    if (!selectedZipFile) {
+      Alert.alert('⚠️ No File', 'Please select a ZIP file first');
+      return;
+    }
+
+    if (!manualUserId.trim()) {
+      Alert.alert('⚠️ Missing User ID', 'Please enter your User ID');
+      return;
+    }
+
+    if (!manualMasterKey.trim()) {
+      Alert.alert('⚠️ Missing Master Key', 'Please enter your Master Key');
+      return;
+    }
+
+    if (manualMasterKey.length !== 64) {
+      Alert.alert('⚠️ Invalid Key', 'Master Key must be exactly 64 characters (hex)');
+      return;
+    }
+
+    try {
+      setManualDecoding(true);
+
+      console.log('🎵 Manual decoding with:', {
+        file: selectedZipFile.name,
+        userId: manualUserId,
+        keyLength: manualMasterKey.length,
+      });
+
+      // Call FastAPI directly with manual inputs
+      const baseUrl = 'https://minor-project-all-in-one-repository.vercel.app';
+      const formData = new FormData();
+
+      // Read ZIP file
+      const fileContent = await FileSystem.readAsStringAsync(selectedZipFile.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // Convert base64 to blob
+      const blob = await fetch(`data:application/zip;base64,${fileContent}`).then(res => res.blob());
+
+      formData.append('encrypted_zip', blob, selectedZipFile.name);
+      formData.append('user_id', manualUserId);
+      formData.append('master_key', manualMasterKey);
+      formData.append('output_filename', selectedZipFile.name.replace('.zip', '.wav'));
+
+      console.log('📤 Sending to FastAPI...');
+
+      const response = await fetch(`${baseUrl}/api/v1/decode`, {
+        method: 'POST',
+        headers: {
+          'X-API-Key': 'x7kX9jb8LyzVmJ5Dvy06n9yl0lSxB4Ut9ZidUWAZ0dk',
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Decoding failed: ${response.status} - ${errorText}`);
+      }
+
+      const audioBlob = await response.blob();
+      console.log('✅ Audio decoded:', audioBlob.size, 'bytes');
+
+      // Save to local file system
+      const outputFilename = `decoded_manual_${Date.now()}.wav`;
+      const outputPath = `${FileSystem.documentDirectory}${outputFilename}`;
+
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64data = reader.result as string;
+        const base64 = base64data.split(',')[1];
+
+        await FileSystem.writeAsStringAsync(outputPath, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        console.log('✅ Audio saved to:', outputPath);
+
+        Alert.alert(
+          '✅ Decoding Complete!',
+          'Audio decoded successfully from your ZIP file',
+          [
+            {
+              text: 'Play',
+              onPress: () => playAudio(outputPath),
+            },
+            {
+              text: 'Share',
+              onPress: () => shareAudio(outputPath),
+            },
+            {
+              text: 'OK',
+              style: 'cancel',
+            },
+          ]
+        );
+      };
+
+      reader.readAsDataURL(audioBlob);
+    } catch (error: any) {
+      console.error('❌ Manual decode error:', error);
+      Alert.alert(
+        '⚠️ Decoding Failed',
+        error.message || 'Failed to decode audio. Please check your User ID and Master Key.'
+      );
+    } finally {
+      setManualDecoding(false);
     }
   };
 
@@ -299,15 +460,124 @@ export default function ImageToAudioGridFSScreen() {
       <View style={[styles.infoBox, { backgroundColor: colors.tint + '15', borderColor: colors.tint + '30' }]}>
         <Text style={styles.infoIcon}>🖼️➜🎵</Text>
         <Text style={[styles.infoText, { color: colors.text }]}>
-          Select a conversion to decode back to audio. All conversions are securely stored in the cloud.
+          {showManualUpload 
+            ? 'Upload your own ZIP file with User ID and Master Key'
+            : 'Select a conversion to decode back to audio. All conversions are securely stored in the cloud.'}
         </Text>
       </View>
 
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
-      >
+      {/* Mode Toggle */}
+      <View style={styles.modeToggleContainer}>
+        <TouchableOpacity
+          style={[
+            styles.modeButton,
+            !showManualUpload && styles.modeButtonActive,
+            !showManualUpload && { backgroundColor: colors.tint },
+          ]}
+          onPress={() => setShowManualUpload(false)}
+        >
+          <Text style={[styles.modeButtonText, !showManualUpload && styles.modeButtonTextActive]}>
+            📂 Database
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.modeButton,
+            showManualUpload && styles.modeButtonActive,
+            showManualUpload && { backgroundColor: colors.tint },
+          ]}
+          onPress={() => setShowManualUpload(true)}
+        >
+          <Text style={[styles.modeButtonText, showManualUpload && styles.modeButtonTextActive]}>
+            📁 Manual Upload
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Manual Upload Section */}
+      {showManualUpload && (
+        <View style={[styles.manualUploadContainer, { backgroundColor: colors.tint + '08' }]}>
+          <View style={styles.manualUploadContent}>
+            {/* ZIP File Picker */}
+            <TouchableOpacity
+              style={[styles.filePickerButton, { backgroundColor: colors.tint + '20', borderColor: colors.tint + '40' }]}
+              onPress={handlePickZipFile}
+            >
+              <Text style={[styles.filePickerIcon]}>📦</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.filePickerLabel, { color: colors.text }]}>
+                  {selectedZipFile ? selectedZipFile.name : 'Select ZIP File'}
+                </Text>
+                {selectedZipFile && (
+                  <Text style={[styles.filePickerSize, { color: colors.icon }]}>
+                    {(selectedZipFile.size / 1024 / 1024).toFixed(2)} MB
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.filePickerArrow, { color: colors.tint }]}>›</Text>
+            </TouchableOpacity>
+
+            {/* User ID Input */}
+            <View style={styles.inputContainer}>
+              <Text style={[styles.inputLabel, { color: colors.text }]}>User ID</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.tint + '10', color: colors.text, borderColor: colors.tint + '30' }]}
+                placeholder="Enter User ID"
+                placeholderTextColor={colors.icon}
+                value={manualUserId}
+                onChangeText={setManualUserId}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+
+            {/* Master Key Input */}
+            <View style={styles.inputContainer}>
+              <Text style={[styles.inputLabel, { color: colors.text }]}>Master Key (64 characters)</Text>
+              <TextInput
+                style={[styles.input, styles.keyInput, { backgroundColor: colors.tint + '10', color: colors.text, borderColor: colors.tint + '30' }]}
+                placeholder="Enter 64-character hexadecimal Master Key"
+                placeholderTextColor={colors.icon}
+                value={manualMasterKey}
+                onChangeText={setManualMasterKey}
+                autoCapitalize="none"
+                autoCorrect={false}
+                multiline
+                numberOfLines={2}
+              />
+              <Text style={[styles.keyHelper, { color: colors.icon }]}>
+                {manualMasterKey.length}/64 characters
+              </Text>
+            </View>
+
+            {/* Decode Button */}
+            <TouchableOpacity
+              style={[
+                styles.manualDecodeButton,
+                { backgroundColor: colors.tint },
+                (!selectedZipFile || !manualUserId || !manualMasterKey || manualDecoding) && styles.disabledButton,
+              ]}
+              onPress={handleManualDecode}
+              disabled={!selectedZipFile || !manualUserId || !manualMasterKey || manualDecoding}
+            >
+              {manualDecoding ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.manualDecodeButtonText}>🎵 Decode Audio</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Conversions List */}
+      {!showManualUpload && (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+        >
         {loading && conversions.length === 0 ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={colors.tint} />
@@ -331,7 +601,8 @@ export default function ImageToAudioGridFSScreen() {
             {conversions.map(renderConversionItem)}
           </>
         )}
-      </ScrollView>
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -483,4 +754,100 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
   },
+  modeToggleContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginBottom: 16,
+    gap: 8,
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: '#ffffff10',
+    borderWidth: 1,
+    borderColor: '#ffffff20',
+  },
+  modeButtonActive: {
+    borderColor: 'transparent',
+  },
+  modeButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff80',
+  },
+  modeButtonTextActive: {
+    color: '#fff',
+  },
+  manualUploadContainer: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 12,
+    padding: 16,
+  },
+  manualUploadContent: {
+    gap: 16,
+  },
+  filePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  filePickerIcon: {
+    fontSize: 32,
+    marginRight: 12,
+  },
+  filePickerLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  filePickerSize: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  filePickerArrow: {
+    fontSize: 24,
+    fontWeight: '300',
+  },
+  inputContainer: {
+    gap: 8,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  input: {
+    padding: 14,
+    borderRadius: 10,
+    fontSize: 16,
+    borderWidth: 1,
+  },
+  keyInput: {
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  keyHelper: {
+    fontSize: 12,
+    marginTop: -4,
+  },
+  manualDecodeButton: {
+    padding: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  disabledButton: {
+    opacity: 0.5,
+  },
+  manualDecodeButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
 });
+
