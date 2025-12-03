@@ -67,10 +67,12 @@ export const audioToImageGridFS = async (req: Request, res: Response, next: Next
       userId,
       fileName: audioFile.originalname,
       fileSize: audioFile.size,
+      masterKey: masterKey.substring(0, 10) + '...',
     });
 
     try {
       // Call FastAPI to encrypt audio → images
+      Logger.info('CONVERSION', `📤 Calling FastAPI encode with userId=${userId}, masterKey=${masterKey.substring(0, 10)}...`);
       const result = await fastApiClient.encodeAudioToImage({
         audioFilePath: audioFile.path,
         userId: userId,

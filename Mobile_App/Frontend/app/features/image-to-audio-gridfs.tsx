@@ -125,31 +125,17 @@ export default function ImageToAudioGridFSScreen() {
 
         console.log('✅ Audio saved to:', outputPath);
 
-        // Offer to share, play, or download
+        // Offer to share or play
         Alert.alert(
-          '✅ Success!',
-          `Audio decoded successfully!\n\nSaved as: ${outputFilename}`,
+          'Success!',
+          'Audio decoded successfully',
           [
             {
-              text: '📥 Download',
-              onPress: async () => {
-                try {
-                  const downloadPath = `${FileSystem.documentDirectory}Downloads/${outputFilename}`;
-                  await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}Downloads`, { intermediates: true });
-                  await FileSystem.copyAsync({ from: outputPath, to: downloadPath });
-                  Alert.alert('Downloaded', `Saved to Downloads folder:\n${outputFilename}`);
-                } catch (err) {
-                  console.error('Download error:', err);
-                  shareAudio(outputPath); // Fallback to share
-                }
-              },
-            },
-            {
-              text: '▶️ Play',
+              text: 'Play',
               onPress: () => playAudio(outputPath),
             },
             {
-              text: '📤 Share',
+              text: 'Share',
               onPress: () => shareAudio(outputPath),
             },
             {

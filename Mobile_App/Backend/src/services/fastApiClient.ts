@@ -164,15 +164,20 @@ export class FastApiClient {
         };
       }
 
-      // Create form data
+      // Create form data - FastAPI expects the ZIP file directly as 'images'
       const formData = new FormData();
-      formData.append('images', createReadStream(request.encryptedZipPath));
+      formData.append('images', createReadStream(request.encryptedZipPath), {
+        filename: path.basename(request.encryptedZipPath),
+        contentType: 'application/zip'
+      });
       formData.append('user_id', request.userId);
       formData.append('master_key', request.masterKey);
 
       if (request.outputFilename) {
         formData.append('output_filename', request.outputFilename);
       }
+
+      Logger.info('FASTAPI', `Sending ZIP to FastAPI: userId=${request.userId}, masterKey=${request.masterKey.substring(0, 10)}..., zipFile=${path.basename(request.encryptedZipPath)}`);
 
       // Make request to FastAPI
       const response: AxiosResponse = await this.client.post('/api/v1/decode', formData, {
@@ -184,7 +189,7 @@ export class FastApiClient {
 
       // Determine file extension from response headers
       const contentDisposition = response.headers['content-disposition'];
-      let filename = `decoded_${Date.now()}.mp3`; // Default
+      let filename = `decoded_${Date.now()}.wav`; // Default to WAV
 
       if (contentDisposition) {
         const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(contentDisposition);
