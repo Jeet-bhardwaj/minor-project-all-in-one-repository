@@ -32,14 +32,14 @@ export default function TabLayout() {
         name="audio-to-image-tab"
         options={{
           title: 'Audio→Image',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="waveform" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="lock.fill" color={color} />,
         }}
       />
       <Tabs.Screen
         name="image-to-audio-tab"
         options={{
           title: 'Image→Audio',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="photo.fill" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="lock.open.fill" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -53,7 +53,7 @@ export default function TabLayout() {
         name="explore"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gear" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gearshape.fill" color={color} />,
         }}
       />
     </Tabs>

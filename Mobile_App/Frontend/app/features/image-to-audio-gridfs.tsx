@@ -762,7 +762,7 @@ const styles = StyleSheet.create({
   modeButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#ffffff80',
+    color: '#000000',
   },
   modeButtonTextActive: {
     color: '#fff',
