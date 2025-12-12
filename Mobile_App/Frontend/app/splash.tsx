@@ -13,10 +13,12 @@ export default function SplashScreen() {
   const colors = Colors[isDark ? 'dark' : 'light'];
 
   useEffect(() => {
-    // Auto-navigate after 5 seconds
+    // Auto-navigate after 2 seconds (reduced from 5)
+    console.log('Splash screen mounted, will navigate in 2 seconds');
     const timer = setTimeout(() => {
+      console.log('Navigating to welcome screen');
       router.replace('/auth/welcome');
-    }, 5000);
+    }, 2000);
 
     return () => clearTimeout(timer);
   }, [router]);
